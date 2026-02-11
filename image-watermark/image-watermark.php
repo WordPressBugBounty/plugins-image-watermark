@@ -2,7 +2,7 @@
 /*
 Plugin Name: Image Watermark
 Description: Secure and brand your images with automatic watermarks. Apply image or text overlays to new uploads and bulk process existing Media Library images with ease.
-Version: 2.0.7
+Version: 2.0.8
 Author: dFactory
 Author URI: http://www.dfactory.co/
 Plugin URI: http://www.dfactory.co/products/image-watermark/
@@ -29,7 +29,7 @@ if ( ! defined( 'ABSPATH' ) )
  * Image Watermark class.
  *
  * @class Image_Watermark
- * @version	2.0.7
+ * @version	2.0.8
  */
 final class Image_Watermark {
 
@@ -96,10 +96,11 @@ final class Image_Watermark {
 				'toast_message'		 => 'This content is protected'
 			],
 			'backup'			 => [
-				'backup_image'	 => true
+				'backup_image'	 => true,
+				'preserve_timestamps' => false
 			]
 		],
-		'version'	 => '2.0.7'
+		'version'	 => '2.0.8'
 	];
 	public $options = [];
 

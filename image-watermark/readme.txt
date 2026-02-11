@@ -4,8 +4,8 @@ Donate link: http://www.dfactory.co/
 Tags: image, images, watermark, watermarking, protection
 Requires at least: 6.0
 Requires PHP: 7.0
-Tested up to: 6.9
-Stable tag: 2.0.7
+Tested up to: 6.9.1
+Stable tag: 2.0.8
 License: MIT License
 License URI: http://opensource.org/licenses/MIT
 
@@ -96,6 +96,9 @@ No questions yet.
 3. screenshot-3.png
 
 == Changelog ==
+
+= 2.0.8 =
+* New: Optional preservation of file timestamps for backup and restore
 
 = 2.0.7 =
 * Fix: GD text alpha cast issue in watermark rendering
@@ -305,5 +308,5 @@ Initial release
 
 == Upgrade Notice ==
 
-= 2.0.7 =
-Fixes edge case text watermark rendering issues.
+= 2.0.8 =
+Adds optional preservation of file timestamps during backup and restore operations.

@@ -35,6 +35,13 @@ class Image_Watermark_Upload_Handler {
 	private $backup_failure_notice_added = false;
 
 	/**
+	 * Tracks if the timestamp preservation notice was added.
+	 *
+	 * @var bool
+	 */
+	private $timestamp_preserve_notice_added = false;
+
+	/**
 	 * Upload handler constructor.
 	 *
 	 * @param Image_Watermark $plugin
@@ -489,7 +496,7 @@ class Image_Watermark_Upload_Handler {
 		}
 
 		// Restore from backup
-		if ( ! copy( $backup_filepath, $filepath ) ) {
+		if ( ! $this->copy_file( $backup_filepath, $filepath, 'restore', $attachment_id ) ) {
 			return [ 'error' => __( 'Failed to restore from backup.', 'image-watermark' ) ];
 		}
 
@@ -1075,7 +1082,7 @@ class Image_Watermark_Upload_Handler {
 			}
 
 			// Copy the original file bit-for-bit after validating it is a decodable image.
-			if ( ! copy( $filepath, $backup_filepath ) ) {
+			if ( ! $this->copy_file( $filepath, $backup_filepath, 'backup', $attachment_id ) ) {
 				imagedestroy( $image );
 				return [
 					'success' => false,
@@ -1101,6 +1108,70 @@ class Image_Watermark_Upload_Handler {
 			'error'   => __( 'Could not read original image file.', 'image-watermark' ),
 			'path'    => null,
 		];
+	}
+
+	/**
+	 * Copy a file, optionally preserving timestamps.
+	 *
+	 * @param string $source Source file path.
+	 * @param string $destination Destination file path.
+	 * @return bool True on success, false on failure.
+	 */
+	private function copy_file( $source, $destination, $context = '', $attachment_id = 0 ) {
+		$preserve = ! empty( $this->plugin->options['backup']['preserve_timestamps'] );
+		$preserve = apply_filters( 'iw_preserve_backup_timestamps', $preserve, $source, $destination, $context, $attachment_id );
+
+		if ( $preserve ) {
+			return $this->copy_with_timestamps( $source, $destination );
+		}
+
+		return copy( $source, $destination );
+	}
+
+	/**
+	 * Copy file preserving original timestamps.
+	 *
+	 * @param string $source Source file path.
+	 * @param string $destination Destination file path.
+	 * @return bool True on success, false on failure.
+	 */
+	private function copy_with_timestamps( $source, $destination ) {
+		if ( ! is_file( $source ) ) {
+			return false;
+		}
+
+		$mtime = filemtime( $source );
+		$atime = fileatime( $source );
+
+		if ( ! copy( $source, $destination ) ) {
+			return false;
+		}
+
+		if ( $mtime !== false ) {
+			$atime = ( $atime !== false ) ? $atime : $mtime;
+			if ( @touch( $destination, $mtime, $atime ) === false ) {
+				$this->maybe_add_timestamp_notice();
+			}
+		}
+
+		return true;
+	}
+
+	/**
+	 * Adds an admin notice when timestamp preservation fails.
+	 *
+	 * @return void
+	 */
+	private function maybe_add_timestamp_notice() {
+		if ( $this->timestamp_preserve_notice_added ) {
+			return;
+		}
+
+		$this->timestamp_preserve_notice_added = true;
+		$this->add_admin_notice(
+			__( 'Image Watermark: File timestamps could not be preserved on this server. Copies were created, but dates may differ.', 'image-watermark' ),
+			'warning'
+		);
 	}
 
 	/**

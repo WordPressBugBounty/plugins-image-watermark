@@ -623,6 +623,15 @@ class Image_Watermark_Settings {
 						'type'    => 'boolean',
 						'parent'  => 'backup',
 						'label'   => __( 'Backup original images', 'image-watermark' ),
+						'description' => __( 'If enabled, original images are backed up before watermarking, allowing watermarks to be removed and originals restored.', 'image-watermark' ),
+					],
+					'preserve_timestamps' => [
+						'title'	  => __( 'Preserve File Dates', 'image-watermark' ),
+						'section' => 'image_watermark_backup',
+						'type'	  => 'boolean',
+						'parent'	  => 'backup',
+						'label'	  => __( 'Preserve original file dates when copying or restoring', 'image-watermark' ),
+						'description' => __( 'If enabled, backup and restore operations keep the original file timestamps (when supported by the server).', 'image-watermark' ),
 					],
 					'backup_folder' => [
 						'title'    => __( 'Backup Location', 'image-watermark' ),
