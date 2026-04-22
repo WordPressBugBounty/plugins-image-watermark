@@ -4,8 +4,8 @@ Donate link: http://www.dfactory.co/
 Tags: image, images, watermark, watermarking, protection
 Requires at least: 6.0
 Requires PHP: 7.0
-Tested up to: 6.9.1
-Stable tag: 2.0.9
+Tested up to: 7.0
+Stable tag: 2.0.10
 License: MIT License
 License URI: http://opensource.org/licenses/MIT
 
@@ -96,6 +96,9 @@ No questions yet.
 3. screenshot-3.png
 
 == Changelog ==
+
+= 2.0.10 =
+* New: Add small-image threshold controls for watermark eligibility
 
 = 2.0.9 =
 * Fix: Gutenberg auto-watermarking for admin media uploads
@@ -313,5 +316,5 @@ Initial release
 
 == Upgrade Notice ==
 
-= 2.0.9 =
-Fixes Gutenberg auto-watermarking and admin media frame compatibility issues.
+= 2.0.10 =
+Adds controls to skip watermarking small images based on minimum dimensions.

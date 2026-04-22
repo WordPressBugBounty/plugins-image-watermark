@@ -342,6 +342,80 @@ class Image_Watermark_Upload_Handler {
 	}
 
 	/**
+	 * Determine whether watermarking should be skipped for a small original image.
+	 *
+	 * @param array $options Plugin options.
+	 * @param int $original_width Original image width.
+	 * @param int $original_height Original image height.
+	 * @return bool
+	 */
+	private function should_skip_small_image( $options, $original_width, $original_height ) {
+		if ( empty( $options['watermark_image']['skip_small_images'] ) ) {
+			return false;
+		}
+
+		$min_width = isset( $options['watermark_image']['min_image_width'] ) ? max( 0, (int) $options['watermark_image']['min_image_width'] ) : 0;
+		$min_height = isset( $options['watermark_image']['min_image_height'] ) ? max( 0, (int) $options['watermark_image']['min_image_height'] ) : 0;
+
+		if ( $min_width <= 0 && $min_height <= 0 ) {
+			return false;
+		}
+
+		if ( $min_width > 0 && $original_width < $min_width ) {
+			return true;
+		}
+
+		if ( $min_height > 0 && $original_height < $min_height ) {
+			return true;
+		}
+
+		return false;
+	}
+
+	/**
+	 * Get the selected image sizes that are available for watermarking.
+	 *
+	 * @param array $options Plugin options.
+	 * @param array $data Attachment metadata.
+	 * @param string $original_file Original file path.
+	 * @param array $upload_dir Upload directory data.
+	 * @return array<string,string>
+	 */
+	private function get_target_image_paths( $options, $data, $original_file, $upload_dir ) {
+		$targets = [];
+
+		if ( empty( $options['watermark_on'] ) || ! is_array( $options['watermark_on'] ) ) {
+			return $targets;
+		}
+
+		foreach ( $options['watermark_on'] as $image_size => $active_size ) {
+			if ( (int) $active_size !== 1 ) {
+				continue;
+			}
+
+			switch ( $image_size ) {
+				case 'full':
+					$filepath = $original_file;
+					break;
+
+				default:
+					if ( empty( $data['sizes'] ) || ! array_key_exists( $image_size, $data['sizes'] ) ) {
+						continue 2;
+					}
+
+					$filepath = $upload_dir['basedir'] . DIRECTORY_SEPARATOR . dirname( $data['file'] ) . DIRECTORY_SEPARATOR . $data['sizes'][ $image_size ]['file'];
+					break;
+			}
+
+			if ( is_file( $filepath ) ) {
+				$targets[ $image_size ] = $filepath;
+			}
+		}
+
+		return $targets;
+	}
+
+	/**
 	 * Applies watermark to attachment sizes.
 	 *
 	 * @param array $data
@@ -423,6 +497,27 @@ class Image_Watermark_Upload_Handler {
 		}
 
 		if ( getimagesize( $original_file, $original_image_info ) !== false ) {
+			$original_width = isset( $original_image_info[0] ) ? (int) $original_image_info[0] : 0;
+			$original_height = isset( $original_image_info[1] ) ? (int) $original_image_info[1] : 0;
+
+			if ( $this->should_skip_small_image( $options, $original_width, $original_height ) ) {
+				if ( $method === 'manual' ) {
+					return [ 'error' => __( 'Image is smaller than the minimum dimensions required for watermarking.', 'image-watermark' ) ];
+				}
+
+				return $data;
+			}
+
+			$target_files = $this->get_target_image_paths( $options, $data, $original_file, $upload_dir );
+
+			if ( empty( $target_files ) ) {
+				if ( $method === 'manual' ) {
+					return [ 'error' => __( 'No selected image sizes are available for this attachment.', 'image-watermark' ) ];
+				}
+
+				return $data;
+			}
+
 			$metadata = $this->get_image_metadata( $original_image_info );
 
 			if ( (int) get_post_meta( $attachment_id, $this->plugin->get_watermarked_meta_key(), true ) === 1 ) {
@@ -469,21 +564,7 @@ class Image_Watermark_Upload_Handler {
 				}
 			}
 
-			foreach ( $options['watermark_on'] as $image_size => $active_size ) {
-				if ( $active_size === 1 ) {
-					switch ( $image_size ) {
-						case 'full':
-							$filepath = $original_file;
-							break;
-
-						default:
-							if ( ! empty( $data['sizes'] ) && array_key_exists( $image_size, $data['sizes'] ) ) {
-								$filepath = $upload_dir['basedir'] . DIRECTORY_SEPARATOR . dirname( $data['file'] ) . DIRECTORY_SEPARATOR . $data['sizes'][ $image_size ]['file'];
-							} else {
-								continue 2;
-							}
-				}
-
+			foreach ( $target_files as $image_size => $filepath ) {
 				do_action( 'iw_before_apply_watermark', $attachment_id, $image_size );
 
 				$this->do_watermark( $attachment_id, $filepath, $image_size, $upload_dir, $metadata );
@@ -491,7 +572,6 @@ class Image_Watermark_Upload_Handler {
 				$this->save_image_metadata( $metadata, $filepath );
 
 				do_action( 'iw_after_apply_watermark', $attachment_id, $image_size );
-				}
 			}
 
 			update_post_meta( $attachment_id, $this->plugin->get_watermarked_meta_key(), 1 );

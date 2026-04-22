@@ -276,6 +276,36 @@ class Image_Watermark_Settings {
 						'skip_saving' => true,
 						'description' => wp_kses_post( __( 'Select the image sizes watermark will be applied to.', 'image-watermark' ) ),
 					],
+					'skip_small_images' => [
+						'title'   => __( 'Skip Small Images', 'image-watermark' ),
+						'section' => 'image_watermark_general',
+						'type'    => 'boolean',
+						'parent'  => 'watermark_image',
+						'label'   => __( 'Skip watermarking for small image sizes.', 'image-watermark' ),
+					],
+					'small_image_threshold' => [
+						'title'       => '',
+						'section'     => 'image_watermark_general',
+						'type'        => 'custom',
+						'callback'    => [ $this, 'render_small_image_threshold' ],
+						'description' => __( 'Skip watermarking when the original uploaded image is smaller than the minimum width or height in pixels.', 'image-watermark' ),
+						'callback_args' => [
+							'width' => [
+								'name'  => 'image_watermark_options[watermark_image][min_image_width]',
+								'value' => $this->plugin->options['watermark_image']['min_image_width'],
+							],
+							'height' => [
+								'name'  => 'image_watermark_options[watermark_image][min_image_height]',
+								'value' => $this->plugin->options['watermark_image']['min_image_height'],
+							],
+						],
+						'condition'   => [
+							'field'    => 'skip_small_images',
+							'operator' => 'is',
+							'value'    => 'true',
+						],
+						'animation'   => 'slide',
+					],
 					'watermark_apply_on' => [
 						'title'    => __( 'Apply Watermark To', 'image-watermark' ),
 						'section'  => 'image_watermark_general',
@@ -874,6 +904,15 @@ class Image_Watermark_Settings {
 					$output['watermark_image']['text_size'] = max( 6, min( 400, (int) $_POST['image_watermark_options']['watermark_image']['text_size'] ) );
 				}
 
+				// Small image threshold
+				if ( isset( $_POST['image_watermark_options']['watermark_image']['min_image_width'] ) ) {
+					$output['watermark_image']['min_image_width'] = max( 0, (int) $_POST['image_watermark_options']['watermark_image']['min_image_width'] );
+				}
+
+				if ( isset( $_POST['image_watermark_options']['watermark_image']['min_image_height'] ) ) {
+					$output['watermark_image']['min_image_height'] = max( 0, (int) $_POST['image_watermark_options']['watermark_image']['min_image_height'] );
+				}
+
 				// Watermark Size Type
 				if ( isset( $_POST['image_watermark_options']['watermark_image']['watermark_size_type'] ) && in_array( (int) $_POST['image_watermark_options']['watermark_image']['watermark_size_type'], [ 0, 1, 2 ], true ) ) {
 					$output['watermark_image']['watermark_size_type'] = (int) $_POST['image_watermark_options']['watermark_image']['watermark_size_type'];
@@ -972,6 +1011,22 @@ class Image_Watermark_Settings {
 			<label for="<?php echo esc_attr( $offset_x_id ); ?>"><?php esc_html_e( 'x:', 'image-watermark' ); ?> <input type="number" id="<?php echo esc_attr( $offset_x_id ); ?>" name="<?php echo esc_attr( $args['callback_args']['x']['name'] ); ?>" value="<?php echo esc_attr( $args['callback_args']['x']['value'] ); ?>" min="0" max="100" /></label>
 
 			<label for="<?php echo esc_attr( $offset_y_id ); ?>"><?php esc_html_e( 'y:', 'image-watermark' ); ?> <input type="number" id="<?php echo esc_attr( $offset_y_id ); ?>" name="<?php echo esc_attr( $args['callback_args']['y']['name'] ); ?>" value="<?php echo esc_attr( $args['callback_args']['y']['value'] ); ?>" min="0" max="100" /></label>
+		</div>
+		<?php
+	}
+
+	/**
+	 * Render small image threshold field.
+	 */
+	public function render_small_image_threshold( $args ) {
+		$base_id = ! empty( $args['html_id'] ) ? $args['html_id'] : 'iw-small-image-threshold';
+		$width_id = $base_id . '-width';
+		$height_id = $base_id . '-height';
+		?>
+		<div class="iw-field-group iw-offset-group">
+			<label for="<?php echo esc_attr( $width_id ); ?>"><?php esc_html_e( 'w:', 'image-watermark' ); ?> <input type="number" id="<?php echo esc_attr( $width_id ); ?>" name="<?php echo esc_attr( $args['callback_args']['width']['name'] ); ?>" value="<?php echo esc_attr( $args['callback_args']['width']['value'] ); ?>" min="0" /></label>
+
+			<label for="<?php echo esc_attr( $height_id ); ?>"><?php esc_html_e( 'h:', 'image-watermark' ); ?> <input type="number" id="<?php echo esc_attr( $height_id ); ?>" name="<?php echo esc_attr( $args['callback_args']['height']['name'] ); ?>" value="<?php echo esc_attr( $args['callback_args']['height']['value'] ); ?>" min="0" /></label>
 		</div>
 		<?php
 	}
