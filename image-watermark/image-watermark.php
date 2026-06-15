@@ -2,7 +2,7 @@
 /*
 Plugin Name: Image Watermark
 Description: Secure and brand your images with automatic watermarks. Apply image or text overlays to new uploads and bulk process existing Media Library images with ease.
-Version: 2.0.10
+Version: 2.0.11
 Author: dFactory
 Author URI: http://www.dfactory.co/
 Plugin URI: http://www.dfactory.co/products/image-watermark/
@@ -29,7 +29,7 @@ if ( ! defined( 'ABSPATH' ) )
  * Image Watermark class.
  *
  * @class Image_Watermark
- * @version	2.0.10
+ * @version	2.0.11
  */
 final class Image_Watermark {
 
@@ -103,7 +103,7 @@ final class Image_Watermark {
 				'preserve_timestamps' => false
 			]
 		],
-		'version'	 => '2.0.10'
+		'version'	 => '2.0.11'
 	];
 	public $options = [];
 
@@ -987,7 +987,7 @@ final class Image_Watermark {
 	 */
 	public function check_imagick() {
 		// check Imagick's extension and classes
-		if ( ! extension_loaded( 'imagick' ) || ! class_exists( 'Imagick', false ) || ! class_exists( 'ImagickPixel', false ) )
+		if ( ! extension_loaded( 'imagick' ) || ! class_exists( 'Imagick', false ) || ! class_exists( 'ImagickPixel', false ) || ! class_exists( 'ImagickDraw', false ) )
 			return false;
 
 		// check version
@@ -995,12 +995,66 @@ final class Image_Watermark {
 			return false;
 
 		// check for deep requirements within Imagick
-		if ( ! defined( 'imagick::COMPRESSION_JPEG' ) || ! defined( 'imagick::COMPOSITE_OVERLAY' ) || ! defined( 'Imagick::INTERLACE_PLANE' ) || ! defined( 'imagick::FILTER_CATROM' ) || ! defined( 'Imagick::CHANNEL_ALL' ) )
+		if ( ! defined( 'Imagick::COMPRESSION_JPEG' ) || ! defined( 'Imagick::COMPOSITE_DEFAULT' ) || ! defined( 'Imagick::INTERLACE_PLANE' ) || ! defined( 'Imagick::FILTER_CATROM' ) || ! defined( 'Imagick::CHANNEL_ALL' ) || ! defined( 'Imagick::CHANNEL_ALPHA' ) || ! defined( 'Imagick::EVALUATE_MULTIPLY' ) )
 			return false;
 
 		// check methods
-		if ( array_diff( [ 'clear', 'destroy', 'valid', 'getimage', 'writeimage', 'getimagegeometry', 'getimageformat', 'setimageformat', 'setimagecompression', 'setimagecompressionquality', 'scaleimage' ], get_class_methods( 'Imagick' ) ) )
+		if ( ! $this->has_required_methods(
+			'Imagick',
+			[
+				'clear',
+				'destroy',
+				'newImage',
+				'writeImage',
+				'getImageGeometry',
+				'setImageFormat',
+				'setImageCompression',
+				'setImageCompressionQuality',
+				'setImageInterlaceScheme',
+				'getImageAlphaChannel',
+				'evaluateImage',
+				'setImageOpacity',
+				'resizeImage',
+				'compositeImage',
+				'annotateImage',
+				'drawImage',
+			]
+		) )
 			return false;
+
+		if ( ! $this->has_required_methods(
+			'ImagickDraw',
+			[
+				'clear',
+				'destroy',
+				'setFont',
+				'setFontSize',
+				'getFontMetrics',
+				'setFillColor',
+				'setFillOpacity',
+				'setStrokeColor',
+				'setStrokeWidth',
+				'rectangle',
+			]
+		) )
+			return false;
+
+		return true;
+	}
+
+	/**
+	 * Check whether a class provides all required methods.
+	 *
+	 * @param string $class_name Class name.
+	 * @param array  $methods Required method names.
+	 * @return bool
+	 */
+	private function has_required_methods( $class_name, $methods ) {
+		foreach ( $methods as $method ) {
+			if ( ! method_exists( $class_name, $method ) ) {
+				return false;
+			}
+		}
 
 		return true;
 	}

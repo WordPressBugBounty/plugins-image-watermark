@@ -431,6 +431,10 @@ class Image_Watermark_Upload_Handler {
 
 		// Bail early if metadata is not an array or missing file info
 		if ( ! is_array( $data ) || empty( $data['file'] ) || ! is_string( $data['file'] ) ) {
+			if ( $method === 'manual' ) {
+				return [ 'error' => __( 'Invalid attachment metadata.', 'image-watermark' ) ];
+			}
+
 			return $data;
 		}
 
@@ -489,16 +493,23 @@ class Image_Watermark_Upload_Handler {
 		}
 
 		$upload_dir = wp_upload_dir();
-		$original_file = $upload_dir['basedir'] . DIRECTORY_SEPARATOR . $data['file'];
+		$attached_file = get_attached_file( $attachment_id );
+		$original_file = ( $attached_file && is_file( $attached_file ) )
+			? $attached_file
+			: $upload_dir['basedir'] . DIRECTORY_SEPARATOR . $data['file'];
 
 		// Ensure the target file exists and is a regular file before processing
 		if ( ! is_file( $original_file ) ) {
+			if ( $method === 'manual' ) {
+				return [ 'error' => __( 'The original image file could not be found. It may have been moved, deleted, or offloaded to remote storage.', 'image-watermark' ) ];
+			}
 			return $data;
 		}
 
-		if ( getimagesize( $original_file, $original_image_info ) !== false ) {
-			$original_width = isset( $original_image_info[0] ) ? (int) $original_image_info[0] : 0;
-			$original_height = isset( $original_image_info[1] ) ? (int) $original_image_info[1] : 0;
+		$image_size_result = getimagesize( $original_file, $original_image_info );
+		if ( $image_size_result !== false ) {
+			$original_width = $image_size_result[0];
+			$original_height = $image_size_result[1];
 
 			if ( $this->should_skip_small_image( $options, $original_width, $original_height ) ) {
 				if ( $method === 'manual' ) {
@@ -537,7 +548,34 @@ class Image_Watermark_Upload_Handler {
 					return $data;
 				}
 
-				$this->remove_watermark( $data, $attachment_id, 'manual' );
+				// Validate that the watermark can actually be rendered before restoring the backup,
+				// so a missing source file cannot silently leave the image de-watermarked.
+				$watermark_type = isset( $options['watermark_image']['type'] ) ? $options['watermark_image']['type'] : 'image';
+				if ( $watermark_type === 'image' ) {
+					$watermark_source_id = isset( $options['watermark_image']['url'] ) ? (int) $options['watermark_image']['url'] : 0;
+					$watermark_source_meta = wp_get_attachment_metadata( $watermark_source_id, true );
+					$watermark_source_path = ( is_array( $watermark_source_meta ) && ! empty( $watermark_source_meta['file'] ) )
+						? $upload_dir['basedir'] . DIRECTORY_SEPARATOR . $watermark_source_meta['file']
+						: '';
+					if ( ! $watermark_source_path || ! is_file( $watermark_source_path ) ) {
+						if ( $method === 'manual' ) {
+							return [ 'error' => __( 'Watermark not applied: the watermark source image file is missing from the server. Please re-select a watermark image in settings.', 'image-watermark' ) ];
+						}
+						return $data;
+					}
+				}
+
+				$remove_result = $this->remove_watermark( $data, $attachment_id, 'manual' );
+
+				// A failed restore must abort: continuing would report success while the
+				// image is still watermarked from the previous pass.
+				if ( is_array( $remove_result ) && isset( $remove_result['error'] ) ) {
+					if ( $method === 'manual' ) {
+						return [ 'error' => $remove_result['error'] ];
+					}
+
+					return $data;
+				}
 			}
 
 			if ( $options['backup']['backup_image'] ) {
@@ -564,17 +602,28 @@ class Image_Watermark_Upload_Handler {
 				}
 			}
 
+			$write_count = 0;
+
 			foreach ( $target_files as $image_size => $filepath ) {
 				do_action( 'iw_before_apply_watermark', $attachment_id, $image_size );
 
-				$this->do_watermark( $attachment_id, $filepath, $image_size, $upload_dir, $metadata );
+				$write_ok = $this->do_watermark( $attachment_id, $filepath, $image_size, $upload_dir, $metadata );
 
-				$this->save_image_metadata( $metadata, $filepath );
-
-				do_action( 'iw_after_apply_watermark', $attachment_id, $image_size );
+				if ( $write_ok ) {
+					$write_count++;
+					$this->save_image_metadata( $metadata, $filepath );
+					do_action( 'iw_after_apply_watermark', $attachment_id, $image_size );
+				}
 			}
 
-			update_post_meta( $attachment_id, $this->plugin->get_watermarked_meta_key(), 1 );
+			if ( $write_count > 0 ) {
+				update_post_meta( $attachment_id, $this->plugin->get_watermarked_meta_key(), 1 );
+			} elseif ( $method === 'manual' ) {
+				return [ 'error' => __( 'Watermark could not be applied to any selected image size. Check that the watermark source file is accessible.', 'image-watermark' ) ];
+			}
+		} elseif ( $method === 'manual' ) {
+			// getimagesize() failed: the file is missing, corrupt, or not a supported image.
+			return [ 'error' => __( 'The image file could not be read. It may be corrupt or in an unsupported format.', 'image-watermark' ) ];
 		}
 
 		return $data;
@@ -779,6 +828,7 @@ class Image_Watermark_Upload_Handler {
 	 * @param string $image_size
 	 * @param array $upload_dir
 	 * @param array $metadata
+	 * @return bool True when the target file was written successfully, false otherwise.
 	 */
 	public function do_watermark( $attachment_id, $image_path, $image_size, $upload_dir, $metadata = [] ) {
 		$options = apply_filters( 'iw_watermark_options', $this->plugin->options );
@@ -788,74 +838,87 @@ class Image_Watermark_Upload_Handler {
 
 		if ( $watermark_type === 'image' ) {
 			if ( ! wp_attachment_is_image( $options['watermark_image']['url'] ) ) {
-				return;
+				return false;
 			}
 
 			$watermark_file = wp_get_attachment_metadata( $options['watermark_image']['url'], true );
 
 			if ( ! is_array( $watermark_file ) || empty( $watermark_file['file'] ) ) {
-				return;
+				return false;
 			}
 
 			$watermark_path = $upload_dir['basedir'] . DIRECTORY_SEPARATOR . $watermark_file['file'];
 
 			if ( ! is_file( $watermark_path ) ) {
-				return;
+				return false;
 			}
 		} elseif ( $watermark_type === 'text' ) {
 			// For text watermark, we don't need a file path
 		} else {
-			return; // Unknown type
+			return false; // Unknown type
 		}
 
 		if ( $this->plugin->get_extension() === 'imagick' ) {
-			$image = new Imagick( $image_path );
+			$image = null;
+			$watermark = null;
+			$write_success = false;
 
-			if ( $watermark_type === 'image' ) {
-				$watermark = new Imagick( $watermark_path );
+			try {
+				$image = new Imagick( $image_path );
 
-				if ( $watermark->getImageAlphaChannel() > 0 ) {
-					$watermark->evaluateImage( Imagick::EVALUATE_MULTIPLY, round( (float) ( $options['watermark_image']['transparent'] / 100 ), 2 ), Imagick::CHANNEL_ALPHA );
+				if ( $watermark_type === 'image' ) {
+					$watermark = new Imagick( $watermark_path );
+
+					if ( $watermark->getImageAlphaChannel() > 0 ) {
+						$watermark->evaluateImage( Imagick::EVALUATE_MULTIPLY, round( (float) ( $options['watermark_image']['transparent'] / 100 ), 2 ), Imagick::CHANNEL_ALPHA );
+					} else {
+						$watermark->setImageOpacity( round( (float) ( $options['watermark_image']['transparent'] / 100 ), 2 ) );
+					}
+				}
+
+				if ( $mime['type'] === 'image/jpeg' ) {
+					$image->setImageCompressionQuality( $options['watermark_image']['quality'] );
+					$image->setImageCompression( imagick::COMPRESSION_JPEG );
 				} else {
-					$watermark->setImageOpacity( round( (float) ( $options['watermark_image']['transparent'] / 100 ), 2 ) );
+					$image->setImageCompressionQuality( $options['watermark_image']['quality'] );
+				}
+
+				if ( $options['watermark_image']['jpeg_format'] === 'progressive' ) {
+					$image->setImageInterlaceScheme( Imagick::INTERLACE_PLANE );
+				}
+
+				$image_dim = $image->getImageGeometry();
+
+				if ( $watermark_type === 'image' ) {
+					$watermark_dim = $watermark->getImageGeometry();
+
+					list( $width, $height ) = $this->calculate_watermark_dimensions( $image_dim['width'], $image_dim['height'], $watermark_dim['width'], $watermark_dim['height'], $options );
+
+					$watermark->resizeImage( $width, $height, imagick::FILTER_CATROM, 1 );
+
+					list( $dest_x, $dest_y ) = $this->calculate_image_coordinates( $image_dim['width'], $image_dim['height'], $width, $height, $options );
+
+					$image->compositeImage( $watermark, Imagick::COMPOSITE_DEFAULT, $dest_x, $dest_y, Imagick::CHANNEL_ALL );
+				} elseif ( $watermark_type === 'text' ) {
+					$this->apply_text_watermark_imagick( $image, $options, $image_dim['width'], $image_dim['height'] );
+				}
+
+				$write_success = (bool) $image->writeImage( $image_path );
+			} catch ( ImagickException $e ) {
+				return false;
+			} finally {
+				if ( $watermark instanceof Imagick ) {
+					$watermark->clear();
+					$watermark->destroy();
+				}
+
+				if ( $image instanceof Imagick ) {
+					$image->clear();
+					$image->destroy();
 				}
 			}
 
-			if ( $mime['type'] === 'image/jpeg' ) {
-				$image->setImageCompressionQuality( $options['watermark_image']['quality'] );
-				$image->setImageCompression( imagick::COMPRESSION_JPEG );
-			} else {
-				$image->setImageCompressionQuality( $options['watermark_image']['quality'] );
-			}
-
-			if ( $options['watermark_image']['jpeg_format'] === 'progressive' ) {
-				$image->setImageInterlaceScheme( Imagick::INTERLACE_PLANE );
-			}
-
-			$image_dim = $image->getImageGeometry();
-
-			if ( $watermark_type === 'image' ) {
-				$watermark_dim = $watermark->getImageGeometry();
-
-				list( $width, $height ) = $this->calculate_watermark_dimensions( $image_dim['width'], $image_dim['height'], $watermark_dim['width'], $watermark_dim['height'], $options );
-
-				$watermark->resizeImage( $width, $height, imagick::FILTER_CATROM, 1 );
-
-				list( $dest_x, $dest_y ) = $this->calculate_image_coordinates( $image_dim['width'], $image_dim['height'], $width, $height, $options );
-
-				$image->compositeImage( $watermark, Imagick::COMPOSITE_DEFAULT, $dest_x, $dest_y, Imagick::CHANNEL_ALL );
-
-				$watermark->clear();
-				$watermark->destroy();
-				$watermark = null;
-			} elseif ( $watermark_type === 'text' ) {
-				$this->apply_text_watermark_imagick( $image, $options, $image_dim['width'], $image_dim['height'] );
-			}
-
-			$image->writeImage( $image_path );
-			$image->clear();
-			$image->destroy();
-			$image = null;
+			return $write_success;
 		} else {
 			$image = $this->get_image_resource( $image_path, $mime['type'] );
 
@@ -867,11 +930,14 @@ class Image_Watermark_Upload_Handler {
 				}
 
 				if ( $image !== false ) {
-					$this->save_image_file( $image, $mime['type'], $image_path, $options['watermark_image']['quality'] );
+					$written = $this->save_image_file( $image, $mime['type'], $image_path, $options['watermark_image']['quality'] );
 					imagedestroy( $image );
 					$image = null;
+					return $written;
 				}
 			}
+
+			return false;
 		}
 	}
 
@@ -1549,23 +1615,22 @@ class Image_Watermark_Upload_Handler {
 	 * @param string $mime_type MIME type for the output image.
 	 * @param string $filepath Destination filesystem path.
 	 * @param int $quality Quality parameter (0-100) for lossy formats.
-	 * @return void
+	 * @return bool True on success, false on failure or unsupported MIME type.
 	 */
 	private function save_image_file( $image, $mime_type, $filepath, $quality ) {
 		switch ( $mime_type ) {
 			case 'image/jpeg':
 			case 'image/pjpeg':
-				imagejpeg( $image, $filepath, $quality );
-				break;
+				return imagejpeg( $image, $filepath, $quality );
 
 			case 'image/png':
-				imagepng( $image, $filepath, (int) round( 9 - ( 9 * $quality / 100 ), 0 ) );
-				break;
+				return imagepng( $image, $filepath, (int) round( 9 - ( 9 * $quality / 100 ), 0 ) );
 
 			case 'image/webp':
-				imagewebp( $image, $filepath, $quality );
-				break;
+				return imagewebp( $image, $filepath, $quality );
 		}
+
+		return false;
 	}
 
 	/**

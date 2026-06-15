@@ -2,7 +2,7 @@
 msgid ""
 msgstr ""
 "Project-Id-Version: Image Watermark\n"
-"POT-Creation-Date: 2026-04-09 18:21+0200\n"
+"POT-Creation-Date: 2026-06-15 12:55+0200\n"
 "PO-Revision-Date: 2015-05-15 19:55+0100\n"
 "Last-Translator: Bartosz Arendt <info@dfactory.eu>\n"
 "Language-Team: dFactory <info@dfactory.pl>\n"
@@ -20,12 +20,12 @@ msgstr ""
 "X-Poedit-SearchPathExcluded-0: node_modules\n"
 
 #: image-watermark.php:370 image-watermark.php:439 image-watermark.php:478 image-watermark.php:922
-#: image-watermark.php:1190
+#: image-watermark.php:1244
 msgid "Apply watermark"
 msgstr ""
 
 #: image-watermark.php:371 image-watermark.php:440 image-watermark.php:479 image-watermark.php:922
-#: image-watermark.php:1192
+#: image-watermark.php:1246
 msgid "Remove watermark"
 msgstr ""
 
@@ -209,26 +209,26 @@ msgstr ""
 msgid "Failed to create sample image."
 msgstr ""
 
-#: image-watermark.php:921 image-watermark.php:1105 includes/class-settings.php:120
+#: image-watermark.php:921 image-watermark.php:1159 includes/class-settings.php:120
 #: includes/class-settings.php:193
 msgid "Image Watermark"
 msgstr ""
 
-#: image-watermark.php:1105
+#: image-watermark.php:1159
 msgid "Image backup"
 msgstr ""
 
-#: image-watermark.php:1105
+#: image-watermark.php:1159
 msgid ""
 "Your uploads folder is not writable, so we can't create backups of your images. This feature has been "
 "disabled for now."
 msgstr ""
 
-#: image-watermark.php:1121
+#: image-watermark.php:1175
 msgid "Settings"
 msgstr ""
 
-#: image-watermark.php:1138
+#: image-watermark.php:1192
 msgid "Support"
 msgstr ""
 
@@ -857,74 +857,96 @@ msgstr ""
 msgid "Selected font \"%s\" is not available. Please choose a different font."
 msgstr ""
 
-#: includes/class-upload-handler.php:329 includes/class-upload-handler.php:598
-#: includes/class-upload-handler.php:1147
+#: includes/class-upload-handler.php:329 includes/class-upload-handler.php:435
+#: includes/class-upload-handler.php:647 includes/class-upload-handler.php:1213
 msgid "Invalid attachment metadata."
 msgstr ""
 
-#: includes/class-upload-handler.php:336 includes/class-upload-handler.php:623
+#: includes/class-upload-handler.php:336 includes/class-upload-handler.php:672
 msgid "No watermark backup found for this image."
 msgstr ""
 
-#: includes/class-upload-handler.php:452
+#: includes/class-upload-handler.php:456
 #, php-format
 msgid "Image Watermark: Upload successful, but watermark skipped - %s"
 msgstr ""
 
-#: includes/class-upload-handler.php:505
+#: includes/class-upload-handler.php:504
+msgid ""
+"The original image file could not be found. It may have been moved, deleted, or offloaded to remote "
+"storage."
+msgstr ""
+
+#: includes/class-upload-handler.php:516
 msgid "Image is smaller than the minimum dimensions required for watermarking."
 msgstr ""
 
-#: includes/class-upload-handler.php:515
+#: includes/class-upload-handler.php:526
 msgid "No selected image sizes are available for this attachment."
 msgstr ""
 
-#: includes/class-upload-handler.php:534
+#: includes/class-upload-handler.php:545
 msgid "Watermark not applied because the original backup is missing."
 msgstr ""
 
-#: includes/class-upload-handler.php:556
+#: includes/class-upload-handler.php:562
+msgid ""
+"Watermark not applied: the watermark source image file is missing from the server. Please re-select a "
+"watermark image in settings."
+msgstr ""
+
+#: includes/class-upload-handler.php:594
 #, php-format
 msgid ""
 "Image Watermark: Backup failed - %s. Watermark not applied. Please check backup folder permissions."
 msgstr ""
 
-#: includes/class-upload-handler.php:615
+#: includes/class-upload-handler.php:622
+msgid ""
+"Watermark could not be applied to any selected image size. Check that the watermark source file is "
+"accessible."
+msgstr ""
+
+#: includes/class-upload-handler.php:626
+msgid "The image file could not be read. It may be corrupt or in an unsupported format."
+msgstr ""
+
+#: includes/class-upload-handler.php:664
 msgid "Original file not found or invalid."
 msgstr ""
 
-#: includes/class-upload-handler.php:628
+#: includes/class-upload-handler.php:677
 msgid "Failed to restore from backup."
 msgstr ""
 
-#: includes/class-upload-handler.php:1159
+#: includes/class-upload-handler.php:1225
 msgid "Original file not found."
 msgstr ""
 
-#: includes/class-upload-handler.php:1188
+#: includes/class-upload-handler.php:1254
 #, php-format
 msgid "Backup folder could not be created: %s"
 msgstr ""
 
-#: includes/class-upload-handler.php:1197
+#: includes/class-upload-handler.php:1263
 #, php-format
 msgid "Backup subfolder could not be created: %s"
 msgstr ""
 
-#: includes/class-upload-handler.php:1207
+#: includes/class-upload-handler.php:1273
 #, php-format
 msgid "Backup folder is not writable: %s"
 msgstr ""
 
-#: includes/class-upload-handler.php:1217
+#: includes/class-upload-handler.php:1283
 msgid "Failed to copy original file to backup location."
 msgstr ""
 
-#: includes/class-upload-handler.php:1236
+#: includes/class-upload-handler.php:1302
 msgid "Could not read original image file."
 msgstr ""
 
-#: includes/class-upload-handler.php:1300
+#: includes/class-upload-handler.php:1366
 msgid ""
 "Image Watermark: File timestamps could not be preserved on this server. Copies were created, but "
 "dates may differ."
