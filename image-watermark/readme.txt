@@ -4,8 +4,8 @@ Donate link: http://www.dfactory.co/
 Tags: image, images, watermark, watermarking, protection
 Requires at least: 6.0
 Requires PHP: 7.0
-Tested up to: 7.0
-Stable tag: 2.0.11
+Tested up to: 7.0.1
+Stable tag: 2.0.12
 License: MIT License
 License URI: http://opensource.org/licenses/MIT
 
@@ -115,6 +115,10 @@ No. The right-click, drag-and-drop, and developer-tools protections are browser-
 3. screenshot-3.png
 
 == Changelog ==
+
+= 2.0.12 =
+* New: Trust diagnostics for watermark readiness in the Status tab
+* Fix: Imagick detection and text metrics compatibility
 
 = 2.0.11 =
 * Fix: Detect Imagick support correctly on servers exposing camelCase methods
@@ -340,5 +344,5 @@ Initial release
 
 == Upgrade Notice ==
 
-= 2.0.11 =
-Improves Imagick engine detection and fixes watermark apply results and small-image threshold checks.
+= 2.0.12 =
+Adds trust diagnostics for watermark readiness and fixes Imagick detection compatibility.
