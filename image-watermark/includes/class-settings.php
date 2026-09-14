@@ -34,6 +34,7 @@ class Image_Watermark_Settings {
 			'slug'       => 'image-watermark',
 			'plugin'     => 'Image Watermark',
 			'plugin_url' => IMAGE_WATERMARK_URL,
+			'asset_version' => $this->plugin->defaults['version'],
 			'object'     => $this->plugin,
 			'nested'     => true
 		] );
@@ -102,7 +103,7 @@ class Image_Watermark_Settings {
 		);
 		$rate_link = sprintf(
 			'<a href="%s" target="_blank">%s</a>',
-			esc_url( 'https://wordpress.org/support/plugin/image-watermark/reviews/?filter=5' ),
+			esc_url( 'https://wordpress.org/support/plugin/image-watermark/reviews/' ),
 			esc_html__( 'Rate it 5 stars', 'image-watermark' )
 		);
 		$plugin_link = sprintf(
@@ -122,31 +123,26 @@ class Image_Watermark_Settings {
 				<h4 class="inner"><?php esc_html_e( 'Need support?', 'image-watermark' ); ?></h4>
 				<p class="inner">
 					<?php
-					printf(
-						wp_kses_post( __( 'If you are having problems with this plugin, please browse its %s or ask in the %s.', 'image-watermark' ) ),
-						$docs_link,
-						$support_link
-					);
+					/* translators: 1: Documentation link. 2: Support forum link. */
+					$message = __( 'If you are having problems with this plugin, please browse its %1$s or ask in the %2$s.', 'image-watermark' );
+					printf( wp_kses_post( $message ), wp_kses_post( $docs_link ), wp_kses_post( $support_link ) );
 					?>
 				</p>
 				<hr />
 				<h4 class="inner"><?php esc_html_e( 'Do you like this plugin?', 'image-watermark' ); ?></h4>
 				<p class="inner">
 					<?php
-					printf(
-						wp_kses_post( __( '%s on WordPress.org', 'image-watermark' ) ),
-						$rate_link
-					);
+					/* translators: Link to the plugin review page. */
+					$message = __( '%s on WordPress.org', 'image-watermark' );
+					printf( wp_kses_post( $message ), wp_kses_post( $rate_link ) );
 					echo '<br />';
-					printf(
-						wp_kses_post( __( 'Blog about it and link to the %s.', 'image-watermark' ) ),
-						$plugin_link
-					);
+					/* translators: Link to the plugin page. */
+					$message = __( 'Blog about it and link to the %s.', 'image-watermark' );
+					printf( wp_kses_post( $message ), wp_kses_post( $plugin_link ) );
 					echo '<br />';
-					printf(
-						wp_kses_post( __( 'Check out our other %s.', 'image-watermark' ) ),
-						$other_link
-					);
+					/* translators: Link to the developer's other WordPress plugins. */
+					$message = __( 'Check out our other %s.', 'image-watermark' );
+					printf( wp_kses_post( $message ), wp_kses_post( $other_link ) );
 					?>
 				</p>
 				<hr />
@@ -311,12 +307,12 @@ class Image_Watermark_Settings {
 						'section'  => 'image_watermark_general',
 						'type'     => 'radio',
 						'options'  => [
-							'everywhere' => __( 'Everywhere', 'image-watermark' ),
-							'post_types' => __( 'Selected Post Types', 'image-watermark' ),
+							'everywhere' => __( 'All uploads', 'image-watermark' ),
+							'post_types' => __( 'Uploads attached to selected post types', 'image-watermark' ),
 						],
 						'name' => 'image_watermark_options[watermark_apply_on]',
 						'value' => $watermark_apply_on_value,
-						'description' => __( 'Choose whether watermarks apply to all uploads or only selected post types.', 'image-watermark' ),
+						'description' => __( 'Post-type filtering is evaluated when an image is uploaded. Images uploaded directly to the Media Library are unattached and will be skipped. Assigning an existing image to a post later does not apply a watermark.', 'image-watermark' ),
 					],
 					'watermark_cpt_on' => [
 						'title'    => __( 'Post Types', 'image-watermark' ),
@@ -326,7 +322,7 @@ class Image_Watermark_Settings {
 						'name' => 'image_watermark_options[watermark_cpt_on]',
 						'value' => $watermark_cpt_value,
 						'skip_saving' => true,
-						'description' => __( 'Select post types on which watermark should be applied to uploaded images.', 'image-watermark' ),
+						'description' => __( 'Select the parent post types whose attached uploads should be watermarked.', 'image-watermark' ),
 						'condition'   => [
 							'field'    => 'watermark_apply_on',
 							'operator' => 'is',
@@ -343,6 +339,20 @@ class Image_Watermark_Settings {
 						'callback' => [ $this, 'render_alignment' ],
 						'description' => __( 'Select the watermark alignment.', 'image-watermark' ),
 						'name' => 'image_watermark_options[watermark_image][position]',
+					],
+					'rotation' => [
+						'title'        => __( 'Watermark Rotation', 'image-watermark' ),
+						'section'      => 'image_watermark_position',
+						'type'         => 'range',
+						'parent'       => 'watermark_image',
+						'name'         => 'image_watermark_options[watermark_image][rotation]',
+						'value'        => $this->plugin->options['watermark_image']['rotation'],
+						'min'          => 0,
+						'max'          => 360,
+						'step'         => 1,
+						'before_field' => '<div class="iw-range-field">',
+						'after_field'  => '</div>',
+						'description'  => __( 'Rotate the watermark clockwise from 0 to 360 degrees. 0 and 360 produce no rotation.', 'image-watermark' ),
 					],
 					'offset' => [
 						'title'    => __( 'Watermark Offset', 'image-watermark' ),
@@ -390,7 +400,7 @@ class Image_Watermark_Settings {
 						'section'  => 'image_watermark_image',
 						'type'     => 'custom',
 						'callback' => [ $this, 'render_preview' ],
-						'description' => __( 'Preview uses a 600 x 400 px stage and mirrors your size, alignment and offset settings.', 'image-watermark' ),
+						'description' => __( 'Preview uses a 600 x 400 px stage and mirrors your size, rotation, alignment and offset settings.', 'image-watermark' ),
 					],
 					'image_ui' => [
 						'title'    => __( 'Watermark Image', 'image-watermark' ),
@@ -691,286 +701,359 @@ class Image_Watermark_Settings {
 	 * @return array
 	 */
 	public function validate_settings( $input ) {
-		if ( ! current_user_can( 'manage_options' ) )
-			return $input;
+		$existing = $this->get_existing_options();
+		$review_update = $this->is_review_notice_update( $input, $existing );
 
-		// Load existing options
-		$existing = get_option( 'image_watermark_options', $this->plugin->defaults['options'] );
+		if ( ! current_user_can( 'manage_options' ) && ! ( $review_update && current_user_can( 'install_plugins' ) ) ) {
+			return $existing;
+		}
+		if ( $review_update && ! current_user_can( 'manage_options' ) ) {
+			return $this->apply_review_notice_update( $input, $existing );
+		}
 
-		// If this is a reset, return defaults
 		if ( isset( $_POST['reset_image_watermark_options'] ) ) {
 			$defaults = $this->plugin->defaults['options'];
-			// Reset review notice to prevent it from showing after reset
 			$defaults['watermark_image']['review_notice'] = false;
 			$defaults['watermark_image']['review_delay_date'] = 0;
-			
 			add_settings_error( 'image_watermark_options', 'settings_restored', __( 'Settings restored to defaults.', 'image-watermark' ), 'updated' );
 			return $defaults;
 		}
 
-		// Get current tab - try POST first, then fallback to GET (for programmatic saves)
-	$current_tab = isset( $_POST['iw_current_tab'] ) ? sanitize_key( $_POST['iw_current_tab'] ) : '';
-	
-	if ( empty( $current_tab ) ) {
-		// Fallback to GET parameter if present (programmatic saves or redirects)
-		$current_tab = isset( $_GET['tab'] ) ? sanitize_key( $_GET['tab'] ) : '';
-	}
-	
-	// Validate current_tab against known tabs to prevent malformed requests
-	$config = $this->get_settings_data();
-	
-	if ( ! empty( $current_tab ) ) {
+		if ( ! is_array( $input ) ) {
+			add_settings_error( 'image_watermark_options', 'invalid_input', __( 'Invalid settings input. Existing settings were preserved.', 'image-watermark' ), 'error' );
+			return $existing;
+		}
+		$is_settings_submission = isset( $_POST['option_page'] ) && $_POST['option_page'] === 'image_watermark_options';
+		if ( ! $is_settings_submission && isset( $input['watermark_image'] ) && is_array( $input['watermark_image'] ) ) {
+			// Review-notice state is changed by the authorized system lifecycle with
+			// update_option(). Preserve that narrow programmatic path without allowing
+			// a malformed Settings API submission to assign arbitrary raw input.
+			if ( array_key_exists( 'review_notice', $input['watermark_image'] ) ) {
+				$value = $input['watermark_image']['review_notice'];
+				if ( $value === true || $value === false || $value === 1 || $value === 0 || $value === '1' || $value === '0' || $value === 'true' || $value === 'false' ) {
+					$existing['watermark_image']['review_notice'] = ( $value === true || $value === 1 || $value === '1' || $value === 'true' );
+				}
+			}
+			if ( array_key_exists( 'review_delay_date', $input['watermark_image'] ) && is_scalar( $input['watermark_image']['review_delay_date'] ) && filter_var( $input['watermark_image']['review_delay_date'], FILTER_VALIDATE_INT ) !== false && (int) $input['watermark_image']['review_delay_date'] >= 0 ) {
+				$existing['watermark_image']['review_delay_date'] = (int) $input['watermark_image']['review_delay_date'];
+			}
+		}
+
+		$current_tab = isset( $_POST['iw_current_tab'] ) && is_scalar( $_POST['iw_current_tab'] ) ? sanitize_key( $_POST['iw_current_tab'] ) : '';
+		if ( $current_tab === '' && isset( $_GET['tab'] ) && is_scalar( $_GET['tab'] ) ) {
+			$current_tab = sanitize_key( $_GET['tab'] );
+		}
+		if ( $current_tab === '' ) {
+			$current_tab = 'watermark';
+		}
+
+		$config = $this->get_settings_data();
 		if ( ! isset( $config[$current_tab] ) ) {
-			// Invalid tab - reject to prevent data loss
 			add_settings_error( 'image_watermark_options', 'invalid_tab', __( 'Invalid settings tab. Please try again.', 'image-watermark' ), 'error' );
 			return $existing;
 		}
-	} else {
-		// Missing tab identifier - this should not happen in normal settings page flow
-		// but we'll allow it for programmatic saves by defaulting to watermark tab
-		$current_tab = 'watermark';
-	}
 
-	// Start with existing
-	$output = $existing;
-	
-	// Allow programmatic updates for review notice flags.
-	if ( isset( $input['watermark_image'] ) && is_array( $input['watermark_image'] ) ) {
-		if ( array_key_exists( 'review_notice', $input['watermark_image'] ) ) {
-			$output['watermark_image']['review_notice'] = ( $input['watermark_image']['review_notice'] === 'true' || $input['watermark_image']['review_notice'] === true || $input['watermark_image']['review_notice'] === '1' || $input['watermark_image']['review_notice'] === 1 );
+		// The Settings API has already unslashed $input. Do not read the raw option
+		// payload from $_POST or unslash it again; this method is reusable by P00-12.
+		$output = $existing;
+		$this->validate_settings_fields( $config[$current_tab]['fields'], $input, $output );
+
+		if ( $current_tab === 'watermark' ) {
+			$this->validate_watermark_custom_fields( $input, $output );
 		}
 
-		if ( array_key_exists( 'review_delay_date', $input['watermark_image'] ) ) {
-			$output['watermark_image']['review_delay_date'] = max( 0, (int) $input['watermark_image']['review_delay_date'] );
-		}
-	}
-
-	if ( isset( $config[$current_tab] ) ) {
-			$fields = $config[$current_tab]['fields'];
-
-			foreach ( $fields as $field_key => $field ) {
-				// Skip if skip_saving is true
-				if ( ! empty( $field['skip_saving'] ) )
-					continue;
-
-				// Handle nested
-				$parent = isset( $field['parent'] ) ? $field['parent'] : null;
-
-				if ( $parent ) {
-					// Nested logic
-					if ( isset( $input[$parent][$field_key] ) ) {
-						$value = $input[$parent][$field_key];
-						// Basic sanitization
-						if ( $field['type'] === 'boolean' ) {
-							$value = ( $value === 'true' || $value === true || $value === '1' || $value === 1 );
-						} elseif ( $field['type'] === 'number' ) {
-							$value = (int) $value;
-						} else {
-							$value = sanitize_text_field( $value );
-						}
-						$output[$parent][$field_key] = $value;
-					} elseif ( $field['type'] === 'boolean' || $field['type'] === 'checkbox' ) {
-						// Unchecked boolean/checkbox
-						$output[$parent][$field_key] = false;
-					}
-				} else {
-					// Flat logic
-					if ( isset( $input[$field_key] ) ) {
-						$value = $input[$field_key];
-						// Basic sanitization
-						if ( $field['type'] === 'boolean' ) {
-							$value = ( $value === 'true' || $value === true || $value === '1' || $value === 1 );
-						} elseif ( $field['type'] === 'number' ) {
-							$value = (int) $value;
-						} else {
-							$value = sanitize_text_field( $value );
-						}
-						$output[$field_key] = $value;
-					} elseif ( $field['type'] === 'boolean' || $field['type'] === 'checkbox' ) {
-						// Unchecked boolean/checkbox
-						$output[$field_key] = false;
-					}
-				}
-			}
-			
-			// Handle custom fields that might not be in the standard loop
-			if ( $current_tab === 'watermark' ) {
-				// Watermark On (Image Sizes)
-				// Only update when the field is actually posted to prevent cross-tab clearing
-				if ( isset( $_POST['image_watermark_options']['watermark_on'] ) ) {
-					$selected_sizes = $_POST['image_watermark_options']['watermark_on'];
-
-					// Handle explicit empty marker (allows deliberate clearing)
-					if ( $selected_sizes === 'empty' ) {
-						$output['watermark_on'] = [];
-					} else {
-						if ( ! is_array( $selected_sizes ) ) {
-							$selected_sizes = [ $selected_sizes ];
-						}
-
-						$selected_sizes = array_map( 'sanitize_key', $selected_sizes );
-						$image_sizes = get_intermediate_image_sizes();
-						$image_sizes[] = 'full';
-
-						$selected_sizes = array_values( array_intersect( $selected_sizes, $image_sizes ) );
-						$output['watermark_on'] = [];
-
-						foreach ( $selected_sizes as $size ) {
-							$output['watermark_on'][$size] = 1;
-						}
-					}
-				}
-				// else: preserve existing value when field not posted
-
-				// Apply On
-				$apply_on = isset( $_POST['image_watermark_options']['watermark_apply_on'] )
-					? sanitize_key( $_POST['image_watermark_options']['watermark_apply_on'] )
-					: ( isset( $output['watermark_apply_on'] ) ? $output['watermark_apply_on'] : '' );
-
-				if ( ! in_array( $apply_on, [ 'everywhere', 'post_types' ], true ) ) {
-					$apply_on = ( isset( $existing['watermark_cpt_on'][0] ) && $existing['watermark_cpt_on'][0] === 'everywhere' ) ? 'everywhere' : 'post_types';
-				}
-
-				$output['watermark_apply_on'] = $apply_on;
-
-				// CPT On
-				// Only update when the field is actually posted to prevent cross-tab clearing
-				if ( $apply_on === 'post_types' && isset( $_POST['image_watermark_options']['watermark_cpt_on'] ) ) {
-					$selected_post_types = $_POST['image_watermark_options']['watermark_cpt_on'];
-
-					// Handle explicit empty marker (allows deliberate clearing)
-					if ( $selected_post_types === 'empty' ) {
-						$output['watermark_cpt_on'] = [];
-					} else {
-						if ( ! is_array( $selected_post_types ) ) {
-							$selected_post_types = [ $selected_post_types ];
-						}
-
-						$selected_post_types = array_map( 'sanitize_key', $selected_post_types );
-						$post_types = array_merge( [ 'post', 'page' ], get_post_types( [ '_builtin' => false ], 'names' ) );
-						$allowed_post_types = $post_types;
-						$selected_post_types = array_values( array_intersect( $selected_post_types, $allowed_post_types ) );
-
-						$tmp = [];
-						foreach ( $selected_post_types as $cpt ) {
-							$tmp[$cpt] = 1;
-						}
-						$output['watermark_cpt_on'] = $tmp;
-					}
-				}
-				// else: preserve existing value when field not posted
-				
-				// Position
-				if ( isset( $_POST['image_watermark_options']['watermark_image']['position'] ) ) {
-					$output['watermark_image']['position'] = sanitize_text_field( $_POST['image_watermark_options']['watermark_image']['position'] );
-				}
-				
-				// Offsets
-				if ( isset( $_POST['image_watermark_options']['watermark_image']['offset_width'] ) ) {
-					$output['watermark_image']['offset_width'] = (int) $_POST['image_watermark_options']['watermark_image']['offset_width'];
-				}
-				if ( isset( $_POST['image_watermark_options']['watermark_image']['offset_height'] ) ) {
-					$output['watermark_image']['offset_height'] = (int) $_POST['image_watermark_options']['watermark_image']['offset_height'];
-				}
-
-				// Watermark URL (attachment ID)
-				if ( isset( $_POST['image_watermark_options']['watermark_image']['url'] ) ) {
-					$output['watermark_image']['url'] = (int) $_POST['image_watermark_options']['watermark_image']['url'];
-				}
-
-				// Watermark Type
-				if ( isset( $_POST['image_watermark_options']['watermark_image']['type'] ) && in_array( $_POST['image_watermark_options']['watermark_image']['type'], [ 'image', 'text' ], true ) ) {
-					$output['watermark_image']['type'] = $_POST['image_watermark_options']['watermark_image']['type'];
-				}
-
-				// Text String
-				if ( isset( $_POST['image_watermark_options']['watermark_image']['text_string'] ) ) {
-					$output['watermark_image']['text_string'] = sanitize_text_field( $_POST['image_watermark_options']['watermark_image']['text_string'] );
-				}
-
-				// Text Font
-				$allowed_fonts = $this->plugin->get_allowed_fonts();
-				if ( isset( $_POST['image_watermark_options']['watermark_image']['text_font'] ) && array_key_exists( $_POST['image_watermark_options']['watermark_image']['text_font'], $allowed_fonts ) ) {
-					$output['watermark_image']['text_font'] = $_POST['image_watermark_options']['watermark_image']['text_font'];
-				}
-
-				// Text Color
-				if ( isset( $_POST['image_watermark_options']['watermark_image']['text_color'] ) && preg_match( '/^#[a-f0-9]{6}$/i', $_POST['image_watermark_options']['watermark_image']['text_color'] ) ) {
-					$output['watermark_image']['text_color'] = $_POST['image_watermark_options']['watermark_image']['text_color'];
-				}
-
-				// Text Size
-				if ( isset( $_POST['image_watermark_options']['watermark_image']['text_size'] ) ) {
-					$output['watermark_image']['text_size'] = max( 6, min( 400, (int) $_POST['image_watermark_options']['watermark_image']['text_size'] ) );
-				}
-
-				// Small image threshold
-				if ( isset( $_POST['image_watermark_options']['watermark_image']['min_image_width'] ) ) {
-					$output['watermark_image']['min_image_width'] = max( 0, (int) $_POST['image_watermark_options']['watermark_image']['min_image_width'] );
-				}
-
-				if ( isset( $_POST['image_watermark_options']['watermark_image']['min_image_height'] ) ) {
-					$output['watermark_image']['min_image_height'] = max( 0, (int) $_POST['image_watermark_options']['watermark_image']['min_image_height'] );
-				}
-
-				// Watermark Size Type
-				if ( isset( $_POST['image_watermark_options']['watermark_image']['watermark_size_type'] ) && in_array( (int) $_POST['image_watermark_options']['watermark_image']['watermark_size_type'], [ 0, 1, 2 ], true ) ) {
-					$output['watermark_image']['watermark_size_type'] = (int) $_POST['image_watermark_options']['watermark_image']['watermark_size_type'];
-				}
-
-				// Absolute Width
-				if ( isset( $_POST['image_watermark_options']['watermark_image']['absolute_width'] ) ) {
-					$output['watermark_image']['absolute_width'] = max( 0, (int) $_POST['image_watermark_options']['watermark_image']['absolute_width'] );
-				}
-
-				// Absolute Height
-				if ( isset( $_POST['image_watermark_options']['watermark_image']['absolute_height'] ) ) {
-					$output['watermark_image']['absolute_height'] = max( 0, (int) $_POST['image_watermark_options']['watermark_image']['absolute_height'] );
-				}
-
-				// Width (scale percentage)
-				if ( isset( $_POST['image_watermark_options']['watermark_image']['width'] ) ) {
-					$output['watermark_image']['width'] = max( 0, min( 100, (int) $_POST['image_watermark_options']['watermark_image']['width'] ) );
-				}
-
-				// Transparent (opacity)
-				if ( isset( $_POST['image_watermark_options']['watermark_image']['transparent'] ) ) {
-					$output['watermark_image']['transparent'] = max( 0, min( 100, (int) $_POST['image_watermark_options']['watermark_image']['transparent'] ) );
-				}
-
-				// Quality
-				if ( isset( $_POST['image_watermark_options']['watermark_image']['quality'] ) ) {
-					$output['watermark_image']['quality'] = max( 0, min( 100, (int) $_POST['image_watermark_options']['watermark_image']['quality'] ) );
-				}
-
-				// JPEG Format
-				if ( isset( $_POST['image_watermark_options']['watermark_image']['jpeg_format'] ) && in_array( $_POST['image_watermark_options']['watermark_image']['jpeg_format'], [ 'baseline', 'progressive' ], true ) ) {
-					$output['watermark_image']['jpeg_format'] = $_POST['image_watermark_options']['watermark_image']['jpeg_format'];
-				}
-
-				// Extension
-				if ( isset( $_POST['image_watermark_options']['watermark_image']['extension'] ) && isset( $this->plugin->extensions[$_POST['image_watermark_options']['watermark_image']['extension']] ) ) {
-					$output['watermark_image']['extension'] = $_POST['image_watermark_options']['watermark_image']['extension'];
-				}
-
-				// Offset Unit
-				if ( isset( $_POST['image_watermark_options']['watermark_image']['offset_unit'] ) && in_array( $_POST['image_watermark_options']['watermark_image']['offset_unit'], [ 'pixels', 'percentages' ], true ) ) {
-					$output['watermark_image']['offset_unit'] = $_POST['image_watermark_options']['watermark_image']['offset_unit'];
-				}
-			}
-
-			// Handle protection tab custom fields
-			if ( $current_tab === 'protection' ) {
-				// Toast Message
-				if ( isset( $_POST['image_watermark_options']['image_protection']['toast_message'] ) ) {
-					$output['image_protection']['toast_message'] = sanitize_text_field( $_POST['image_watermark_options']['image_protection']['toast_message'] );
-				}
-			}
-		}
-		
 		add_settings_error( 'image_watermark_options', 'settings_saved', __( 'Settings saved.', 'image-watermark' ), 'updated' );
-
 		return $output;
+	}
+
+	/**
+	 * Validate a request-local text-preview overlay without saving it.
+	 *
+	 * @param array $input Raw preview fields after request unslashing.
+	 * @param array $existing Current complete settings snapshot.
+	 * @return array
+	 */
+	public function validate_text_preview_options( $input, $existing ) {
+		if ( ! is_array( $input ) || ! is_array( $existing ) || ! isset( $existing['watermark_image'] ) || ! is_array( $existing['watermark_image'] ) ) {
+			return [ 'success' => false, 'error' => __( 'Invalid text preview options.', 'image-watermark' ) ];
+		}
+
+		$config = $this->get_settings_data();
+		$fields = $config['watermark']['fields'];
+		$output = $existing;
+		$preview_fields = [
+			'text_string' => 'text_string',
+			'text_font'   => 'text_font',
+			'text_color'  => 'text_color',
+			'text_size'   => 'text_size',
+			'transparent' => 'opacity',
+			'rotation'    => 'rotation',
+		];
+		foreach ( $preview_fields as $field_key => $settings_field_key ) {
+			if ( ! array_key_exists( $field_key, $input ) ) {
+				continue;
+			}
+			$value = $input[$field_key];
+			if ( ! $this->validate_settings_field_value( $field_key, $fields[$settings_field_key], $value ) ) {
+				return [ 'success' => false, 'error' => __( 'Invalid text preview options.', 'image-watermark' ) ];
+			}
+			$output['watermark_image'][$field_key] = $value;
+		}
+
+		if ( array_key_exists( 'position', $input ) ) {
+			if ( ! $this->is_valid_watermark_position( $input['position'] ) ) {
+				return [ 'success' => false, 'error' => __( 'Invalid text preview options.', 'image-watermark' ) ];
+			}
+			$output['watermark_image']['position'] = sanitize_key( $input['position'] );
+		}
+
+		$output['watermark_image']['type'] = 'text';
+		$text = isset( $output['watermark_image']['text_string'] ) ? trim( $output['watermark_image']['text_string'] ) : '';
+		$font = isset( $output['watermark_image']['text_font'] ) ? $output['watermark_image']['text_font'] : '';
+		$font_path = $this->plugin->get_font_path( $font );
+		if ( $text === '' || ! $font_path || ! is_file( $font_path ) ) {
+			return [ 'success' => false, 'error' => __( 'Invalid text preview options.', 'image-watermark' ) ];
+		}
+
+		return [ 'success' => true, 'options' => $output ];
+	}
+
+	/**
+	 * Apply configured fields to a snapshot, retaining existing invalid values.
+	 *
+	 * @param array $fields Settings field definitions.
+	 * @param array $input Normalized settings input.
+	 * @param array $output Validated output, passed by reference.
+	 * @return void
+	 */
+	private function validate_settings_fields( $fields, $input, &$output ) {
+		foreach ( $fields as $field_key => $field ) {
+			if ( ! empty( $field['skip_saving'] ) || $field['type'] === 'custom' ) {
+				continue;
+			}
+			$parent = isset( $field['parent'] ) ? $field['parent'] : null;
+			$has_parent = $parent && isset( $input[$parent] ) && is_array( $input[$parent] );
+			$has_value = $parent ? ( $has_parent && array_key_exists( $field_key, $input[$parent] ) ) : array_key_exists( $field_key, $input );
+			$value = $has_value ? ( $parent ? $input[$parent][$field_key] : $input[$field_key] ) : null;
+			if ( ! $has_value ) {
+				if ( $has_parent && $field['type'] === 'boolean' ) {
+					$output[$parent][$field_key] = false;
+				}
+				continue;
+			}
+			if ( $this->validate_settings_field_value( $field_key, $field, $value ) ) {
+				if ( $parent ) {
+					$output[$parent][$field_key] = $value;
+				} else {
+					$output[$field_key] = $value;
+				}
+			}
+		}
+	}
+
+	/**
+	 * Normalize a configured field and report whether it is valid.
+	 *
+	 * @param string $field_key Field identifier.
+	 * @param array  $field Field definition.
+	 * @param mixed  $value Value, passed by reference.
+	 * @return bool
+	 */
+	private function validate_settings_field_value( $field_key, $field, &$value ) {
+		$valid = ! is_array( $value ) && ! is_object( $value );
+		if ( $valid && $field['type'] === 'boolean' ) {
+			$value = ( $value === true || $value === 1 || $value === '1' || $value === 'true' );
+		} elseif ( $valid && ( $field['type'] === 'number' || $field['type'] === 'range' ) ) {
+			// The shared watermark rotation leaf is integer-only: booleans and
+			// fractions must not become an angle.
+			$integer_only = $field_key === 'rotation' && isset( $field['parent'] ) && $field['parent'] === 'watermark_image';
+			$valid = $integer_only
+				? ( ! is_bool( $value ) && filter_var( $value, FILTER_VALIDATE_INT ) !== false )
+				: is_numeric( $value );
+			if ( $valid ) {
+				$value = (int) $value;
+				if ( isset( $field['min'] ) ) {
+					$value = max( (int) $field['min'], $value );
+				}
+				if ( isset( $field['max'] ) ) {
+					$value = min( (int) $field['max'], $value );
+				}
+			}
+		} elseif ( $valid && $field['type'] === 'color' ) {
+			$value = sanitize_text_field( $value );
+			$valid = (bool) preg_match( '/^#[a-f0-9]{6}$/i', $value );
+		} elseif ( $valid && ( $field['type'] === 'select' || $field['type'] === 'radio' ) ) {
+			$value = sanitize_text_field( $value );
+			$valid = ( $field_key === 'extension' && $value === '' ) || ( isset( $field['options'] ) && array_key_exists( $value, $field['options'] ) );
+		} elseif ( $valid ) {
+			$value = sanitize_text_field( $value );
+		}
+		return $valid;
+	}
+
+	/**
+	 * Determine whether a programmatic update changes only review-notice fields.
+	 *
+	 * @param mixed $input Candidate option value.
+	 * @param array $existing Saved option value.
+	 * @return bool
+	 */
+	private function is_review_notice_update( $input, $existing ) {
+		if ( ! is_array( $input ) || ! isset( $input['watermark_image'] ) || ! is_array( $input['watermark_image'] ) ) {
+			return false;
+		}
+		if ( ! array_key_exists( 'review_notice', $input['watermark_image'] ) && ! array_key_exists( 'review_delay_date', $input['watermark_image'] ) ) {
+			return false;
+		}
+		$candidate = $input;
+		$saved = $existing;
+		unset( $candidate['watermark_image']['review_notice'], $candidate['watermark_image']['review_delay_date'] );
+		unset( $saved['watermark_image']['review_notice'], $saved['watermark_image']['review_delay_date'] );
+		return $candidate === $saved;
+	}
+
+	/**
+	 * Apply the narrow install_plugins-authorized review-notice update path.
+	 *
+	 * @param array $input Candidate option value.
+	 * @param array $existing Saved option value.
+	 * @return array
+	 */
+	private function apply_review_notice_update( $input, $existing ) {
+		if ( array_key_exists( 'review_notice', $input['watermark_image'] ) ) {
+			$value = $input['watermark_image']['review_notice'];
+			if ( $value === true || $value === false || $value === 1 || $value === 0 || $value === '1' || $value === '0' || $value === 'true' || $value === 'false' ) {
+				$existing['watermark_image']['review_notice'] = ( $value === true || $value === 1 || $value === '1' || $value === 'true' );
+			}
+		}
+		if ( array_key_exists( 'review_delay_date', $input['watermark_image'] ) && is_scalar( $input['watermark_image']['review_delay_date'] ) && filter_var( $input['watermark_image']['review_delay_date'], FILTER_VALIDATE_INT ) !== false && (int) $input['watermark_image']['review_delay_date'] >= 0 ) {
+			$existing['watermark_image']['review_delay_date'] = (int) $input['watermark_image']['review_delay_date'];
+		}
+		return $existing;
+	}
+
+	/**
+	 * Return the saved option shape merged with documented defaults.
+	 *
+	 * @return array
+	 */
+	private function get_existing_options() {
+		$stored = get_option( 'image_watermark_options', [] );
+		$defaults = $this->plugin->defaults['options'];
+		if ( ! is_array( $stored ) ) {
+			$stored = [];
+		}
+		$output = array_merge( $defaults, $stored );
+		foreach ( [ 'watermark_image', 'image_protection', 'backup' ] as $group ) {
+			$output[$group] = array_merge( $defaults[$group], isset( $stored[$group] ) && is_array( $stored[$group] ) ? $stored[$group] : [] );
+		}
+		return $output;
+	}
+
+	/**
+	 * Validate fields rendered outside the generic Settings API field loop.
+	 * Offsets deliberately accept every signed PHP integer so placements outside an
+	 * image remain supported; malformed and non-integer offsets keep the saved value.
+	 *
+	 * @param array $input Normalized Settings API input.
+	 * @param array $output Validated output, passed by reference.
+	 * @return void
+	 */
+	private function validate_watermark_custom_fields( $input, &$output ) {
+		$image = isset( $input['watermark_image'] ) && is_array( $input['watermark_image'] ) ? $input['watermark_image'] : [];
+
+		if ( array_key_exists( 'watermark_on', $input ) ) {
+			$selected = $input['watermark_on'];
+			if ( $selected === 'empty' ) {
+				$output['watermark_on'] = [];
+			} elseif ( is_array( $selected ) ) {
+				$allowed = get_intermediate_image_sizes();
+				$allowed[] = 'full';
+				$output['watermark_on'] = [];
+				foreach ( $selected as $size ) {
+					if ( is_scalar( $size ) && in_array( sanitize_key( $size ), $allowed, true ) ) {
+						$output['watermark_on'][sanitize_key( $size )] = 1;
+					}
+				}
+			}
+		}
+
+		if ( array_key_exists( 'watermark_apply_on', $input ) && is_scalar( $input['watermark_apply_on'] ) ) {
+			$apply_on = sanitize_key( $input['watermark_apply_on'] );
+			if ( in_array( $apply_on, [ 'everywhere', 'post_types' ], true ) ) {
+				$output['watermark_apply_on'] = $apply_on;
+			}
+		}
+
+		if ( $output['watermark_apply_on'] === 'post_types' && array_key_exists( 'watermark_cpt_on', $input ) ) {
+			$selected = $input['watermark_cpt_on'];
+			if ( $selected === 'empty' ) {
+				$output['watermark_cpt_on'] = [];
+			} elseif ( is_array( $selected ) ) {
+				$allowed = array_merge( [ 'post', 'page' ], get_post_types( [ '_builtin' => false ], 'names' ) );
+				$output['watermark_cpt_on'] = [];
+				foreach ( $selected as $post_type ) {
+					if ( is_scalar( $post_type ) && in_array( sanitize_key( $post_type ), $allowed, true ) ) {
+						$output['watermark_cpt_on'][sanitize_key( $post_type )] = 1;
+					}
+				}
+			}
+		}
+
+		if ( isset( $image['position'] ) && $this->is_valid_watermark_position( $image['position'] ) ) {
+			$output['watermark_image']['position'] = sanitize_key( $image['position'] );
+		}
+		foreach ( [ 'offset_width', 'offset_height' ] as $offset ) {
+			if ( array_key_exists( $offset, $image ) && is_scalar( $image[$offset] ) && filter_var( $image[$offset], FILTER_VALIDATE_INT ) !== false ) {
+				$output['watermark_image'][$offset] = (int) $image[$offset];
+			}
+		}
+		if ( array_key_exists( 'url', $image ) && is_scalar( $image['url'] ) && filter_var( $image['url'], FILTER_VALIDATE_INT ) !== false && (int) $image['url'] >= 0 ) {
+			$output['watermark_image']['url'] = (int) $image['url'];
+		}
+		$size_type = null;
+		if ( isset( $image['watermark_size_type'] ) && is_scalar( $image['watermark_size_type'] ) && filter_var( $image['watermark_size_type'], FILTER_VALIDATE_INT ) !== false ) {
+			$candidate_size_type = (int) $image['watermark_size_type'];
+			if ( in_array( $candidate_size_type, [ 0, 1, 2 ], true ) ) {
+				$size_type = $candidate_size_type;
+			}
+		}
+		$valid_dimensions = true;
+		$dimensions = [];
+		foreach ( [ 'absolute_width', 'absolute_height' ] as $dimension ) {
+			if ( array_key_exists( $dimension, $image ) ) {
+				if ( ! is_scalar( $image[$dimension] ) || filter_var( $image[$dimension], FILTER_VALIDATE_INT ) === false || (int) $image[$dimension] < 0 ) {
+					$valid_dimensions = false;
+				} else {
+					$dimensions[$dimension] = (int) $image[$dimension];
+				}
+			}
+		}
+		$effective_size_type = $size_type !== null ? $size_type : $output['watermark_image']['watermark_size_type'];
+		if ( $effective_size_type === 1 && ( count( $dimensions ) !== 2 || $dimensions['absolute_width'] <= 0 || $dimensions['absolute_height'] <= 0 ) ) {
+			$valid_dimensions = false;
+		}
+		if ( ! $valid_dimensions ) {
+			add_settings_error( 'image_watermark_options', 'invalid_custom_dimensions', __( 'Custom watermark dimensions must both be positive whole numbers.', 'image-watermark' ), 'error' );
+			return;
+		}
+		if ( $size_type !== null ) {
+			$output['watermark_image']['watermark_size_type'] = $size_type;
+		}
+		foreach ( $dimensions as $dimension => $value ) {
+			$output['watermark_image'][$dimension] = $value;
+		}
+	}
+
+	/**
+	 * Check a watermark alignment against the shared settings allowlist.
+	 *
+	 * @param mixed $position Candidate alignment.
+	 * @return bool
+	 */
+	private function is_valid_watermark_position( $position ) {
+		$positions = [ 'top_left', 'top_center', 'top_right', 'middle_left', 'middle_center', 'middle_right', 'bottom_left', 'bottom_center', 'bottom_right' ];
+		return is_scalar( $position ) && in_array( sanitize_key( $position ), $positions, true );
 	}
 
 	/**

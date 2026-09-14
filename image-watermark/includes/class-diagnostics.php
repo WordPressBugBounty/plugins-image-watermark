@@ -181,15 +181,18 @@ class Image_Watermark_Diagnostics {
 						'image_too_small',
 						self::STATUS_WARNING,
 						__( 'Image size', 'image-watermark' ),
-						sprintf( __( '%d \xc3\x97 %d px', 'image-watermark' ), $w, $h ),
-						sprintf( __( 'Image is smaller than the minimum threshold (%d \xc3\x97 %d px). Update the Skip Small Images setting or choose a larger image.', 'image-watermark' ), $min_w, $min_h )
+						/* translators: 1: Image width in pixels. 2: Image height in pixels. */
+						sprintf( __( '%1$d x %2$d px', 'image-watermark' ), $w, $h ),
+						/* translators: 1: Minimum image width in pixels. 2: Minimum image height in pixels. */
+						sprintf( __( 'Image is smaller than the minimum threshold (%1$d x %2$d px). Update the Skip Small Images setting or choose a larger image.', 'image-watermark' ), $min_w, $min_h )
 					);
 				} else {
 					$items[] = $this->item(
 						'image_size_ok',
 						self::STATUS_OK,
 						__( 'Image size', 'image-watermark' ),
-						sprintf( __( '%d \xc3\x97 %d px', 'image-watermark' ), $w, $h ),
+						/* translators: 1: Image width in pixels. 2: Image height in pixels. */
+						sprintf( __( '%1$d x %2$d px', 'image-watermark' ), $w, $h ),
 						''
 					);
 				}
@@ -208,6 +211,15 @@ class Image_Watermark_Diagnostics {
 		foreach ( $this->build_watermark_config_items( $options ) as $config_item ) {
 			$items[] = $config_item;
 		}
+
+		$eligibility = $this->plugin->get_upload_handler()->describe_operation_eligibility( $attachment_id, 'manual-apply' );
+		$items[] = $this->item(
+			! empty( $eligibility['valid'] ) ? 'operation_eligible' : sanitize_key( $eligibility['code'] ),
+			! empty( $eligibility['valid'] ) ? self::STATUS_OK : self::STATUS_ERROR,
+			__( 'Current operation eligibility', 'image-watermark' ),
+			! empty( $eligibility['valid'] ) ? __( 'Current settings can be applied.', 'image-watermark' ) : $eligibility['error'],
+			''
+		);
 
 		// Target sizes
 		$watermark_on   = isset( $options['watermark_on'] ) && is_array( $options['watermark_on'] ) ? $options['watermark_on'] : [];
@@ -246,6 +258,7 @@ class Image_Watermark_Diagnostics {
 		} elseif ( ! empty( $present_sizes ) ) {
 			$msg = implode( ', ', $present_sizes );
 			if ( ! empty( $missing_sizes ) ) {
+				/* translators: Comma-separated unavailable image-size names. */
 				$msg .= ' ' . sprintf( __( '(missing: %s)', 'image-watermark' ), implode( ', ', $missing_sizes ) );
 				$items[] = $this->item(
 					'some_sizes_missing',
@@ -268,6 +281,7 @@ class Image_Watermark_Diagnostics {
 				'no_sizes_available',
 				self::STATUS_ERROR,
 				__( 'Target sizes', 'image-watermark' ),
+				/* translators: Comma-separated selected image-size names. */
 				sprintf( __( 'Selected sizes (%s) are not available for this attachment.', 'image-watermark' ), implode( ', ', $selected_sizes ) ),
 				__( 'Regenerate thumbnails or select different image sizes in Watermark settings.', 'image-watermark' )
 			);
@@ -285,18 +299,29 @@ class Image_Watermark_Diagnostics {
 
 		// Backup
 		$backup_enabled = ! empty( $options['backup']['backup_image'] );
-		$backup_path    = '';
+		$relative_path  = get_post_meta( $attachment_id, '_wp_attached_file', true );
+		$backup_path    = $relative_path ? $this->plugin->get_upload_handler()->get_image_backup_filepath( $relative_path ) : false;
+		$backup_exists  = $backup_path && $this->plugin->get_upload_handler()->is_valid_backup_file( $backup_path );
 
-		if ( $backup_enabled ) {
-			$relative_path = get_post_meta( $attachment_id, '_wp_attached_file', true );
-			if ( $relative_path ) {
-				$backup_path = IMAGE_WATERMARK_BACKUP_DIR . DIRECTORY_SEPARATOR . $relative_path;
-			}
-		}
+		$inventory_item = $this->item(
+			'attachment_file_inventory',
+			self::STATUS_INFO,
+			__( 'File inventory', 'image-watermark' ),
+			__( 'The full attachment file and selected generated sizes are watermark targets. A WordPress -scaled attachment file is the full target when selected. A separately retained original_image file is not a current watermark target. File URLs may be derivable, but this diagnostic does not test HTTP access. Backup locations are not disclosed.', 'image-watermark' ),
+			__( 'Verify public-file and backup access with unauthenticated requests on the deployed server. Server access rules, not browser copy deterrents, control file access.', 'image-watermark' )
+		);
+		$inventory_item['inventory'] = $this->build_attachment_file_inventory( $data, $source_file, $upload_dir, $selected_sizes, $is_watermarked, $backup_exists, $attachment_id );
+		$items[] = $inventory_item;
 
-		$backup_exists = $backup_enabled && $backup_path && is_file( $backup_path ) && is_readable( $backup_path );
-
-		if ( $backup_enabled ) {
+		if ( $relative_path && $backup_path === false ) {
+			$items[] = $this->item(
+				'invalid_backup_path',
+				self::STATUS_ERROR,
+				__( 'Backup', 'image-watermark' ),
+				__( 'The attachment backup path is invalid. No backup file was used.', 'image-watermark' ),
+				__( 'Correct the attachment file record or retry after restoring valid media metadata.', 'image-watermark' )
+			);
+		} elseif ( $backup_exists || $backup_enabled ) {
 			$items[] = $this->item(
 				$backup_exists ? 'backup_exists' : 'backup_missing',
 				$backup_exists ? self::STATUS_OK : ( $is_watermarked ? self::STATUS_WARNING : self::STATUS_INFO ),
@@ -304,7 +329,7 @@ class Image_Watermark_Diagnostics {
 				$backup_exists ? __( 'Backup exists.', 'image-watermark' ) : __( 'No backup found.', 'image-watermark' ),
 				$backup_exists ? '' : (
 					$is_watermarked
-						? __( 'Image is watermarked but no backup was found. Remove watermark is not possible. Re-apply with backup enabled to restore remove capability.', 'image-watermark' )
+						? __( 'Image is watermarked but no valid clean backup was found. Remove watermark is not possible.', 'image-watermark' )
 						: __( 'No backup yet. A backup will be created when watermark is applied.', 'image-watermark' )
 				)
 			);
@@ -319,7 +344,7 @@ class Image_Watermark_Diagnostics {
 		}
 
 		// Remove feasibility
-		$can_remove = $backup_enabled && $backup_exists && $is_watermarked;
+		$can_remove = $backup_exists && $is_watermarked;
 		$items[] = $this->item(
 			$can_remove ? 'can_remove' : ( $is_watermarked ? 'cannot_remove' : 'remove_not_applicable' ),
 			$can_remove ? self::STATUS_OK : ( $is_watermarked ? self::STATUS_WARNING : self::STATUS_INFO ),
@@ -327,21 +352,22 @@ class Image_Watermark_Diagnostics {
 			$can_remove
 				? __( 'Possible.', 'image-watermark' )
 				: ( $is_watermarked ? __( 'Not possible - no backup.', 'image-watermark' ) : __( 'Not applicable - image is not watermarked.', 'image-watermark' ) ),
-			$can_remove ? '' : ( $is_watermarked ? __( 'Re-apply watermark with backup enabled to restore remove capability.', 'image-watermark' ) : '' )
+				$can_remove ? '' : ( $is_watermarked ? __( 'A verified clean backup is required before the watermark can be removed.', 'image-watermark' ) : '' )
 		);
 
 		// Last operation
-		$last_op = get_post_meta( $attachment_id, '_iw_last_operation', true );
+		$last_op = $this->plugin->get_upload_handler()->get_attachment_operation_outcome( $attachment_id );
 
-		if ( is_array( $last_op ) && ! empty( $last_op['status'] ) ) {
+		if ( is_array( $last_op ) && ! empty( $last_op['outcome'] ) ) {
 			$status_map = [
-				'success' => self::STATUS_OK,
-				'error'   => self::STATUS_ERROR,
-				'skipped' => self::STATUS_WARNING,
-				'warning' => self::STATUS_WARNING,
+				'complete'    => self::STATUS_OK,
+				'failed'      => self::STATUS_ERROR,
+				'interrupted' => self::STATUS_ERROR,
+				'partial'     => self::STATUS_WARNING,
+				'skipped'     => self::STATUS_WARNING,
 			];
-			$op_status = isset( $status_map[ $last_op['status'] ] ) ? $status_map[ $last_op['status'] ] : self::STATUS_INFO;
-			$op_msg    = ! empty( $last_op['message'] ) ? $last_op['message'] : $last_op['status'];
+			$op_status = isset( $status_map[ $last_op['outcome'] ] ) ? $status_map[ $last_op['outcome'] ] : self::STATUS_INFO;
+			$op_msg    = ! empty( $last_op['message'] ) ? $last_op['message'] : $last_op['outcome'];
 
 			if ( ! empty( $last_op['context'] ) ) {
 				$op_msg = '[' . $last_op['context'] . '] ' . $op_msg;
@@ -350,14 +376,30 @@ class Image_Watermark_Diagnostics {
 			if ( ! empty( $last_op['time'] ) ) {
 				$op_msg .= ' (' . date_i18n( get_option( 'date_format' ) . ' ' . get_option( 'time_format' ), (int) $last_op['time'] ) . ')';
 			}
+			$sizes = isset( $last_op['sizes'] ) && is_array( $last_op['sizes'] ) ? $last_op['sizes'] : [];
+			/* translators: 1: Processed size count. 2: Failed size count. 3: Skipped size count. */
+			$op_msg .= sprintf( __( ' Processed: %1$d; failed: %2$d; skipped: %3$d.', 'image-watermark' ), count( isset( $sizes['processed'] ) ? $sizes['processed'] : [] ), count( isset( $sizes['failed'] ) ? $sizes['failed'] : [] ), count( isset( $sizes['skipped'] ) ? $sizes['skipped'] : [] ) );
+			$operation_sizes = [];
+			$remaining_size_details = 20;
+			foreach ( [ 'processed', 'failed', 'skipped' ] as $size_status ) {
+				$values = isset( $sizes[ $size_status ] ) && is_array( $sizes[ $size_status ] ) ? $sizes[ $size_status ] : [];
+				$operation_sizes[ $size_status ] = array_slice( $values, 0, $remaining_size_details );
+				$remaining_size_details -= count( $operation_sizes[ $size_status ] );
+			}
 
-			$items[] = $this->item(
+			$item = $this->item(
 				'last_op_' . ( ! empty( $last_op['code'] ) ? sanitize_key( $last_op['code'] ) : 'unknown' ),
 				$op_status,
 				__( 'Last operation', 'image-watermark' ),
 				$op_msg,
 				''
 			);
+			$item['operation'] = [
+				'outcome' => sanitize_key( $last_op['outcome'] ),
+				'code'    => ! empty( $last_op['code'] ) ? sanitize_key( $last_op['code'] ) : '',
+				'sizes'   => $operation_sizes,
+			];
+			$items[] = $item;
 		}
 
 		return $items;
@@ -397,6 +439,9 @@ class Image_Watermark_Diagnostics {
 			'watermark_source_file_missing',
 			'watermark_text_empty',
 			'watermark_font_missing',
+			'no_engine',
+			'manual_disabled',
+			'invalid_custom_dimensions',
 		];
 
 		foreach ( $blocking_codes as $code ) {
@@ -410,6 +455,11 @@ class Image_Watermark_Diagnostics {
 		if ( $apply === 'ok' && isset( $codes['image_too_small'] ) ) {
 			$apply = 'warning';
 			$hint  = $codes['image_too_small']['hint'];
+		}
+
+		if ( isset( $codes['is_watermarked'] ) && ( isset( $codes['backup_missing'] ) || isset( $codes['backup_disabled'] ) || isset( $codes['cannot_remove'] ) ) ) {
+			$apply = 'blocked';
+			$hint  = __( 'The image is watermarked and no valid clean backup is available for safe reapplication.', 'image-watermark' );
 		}
 
 		if ( $apply === 'ok' && isset( $codes['is_watermarked'] ) ) {
@@ -544,13 +594,14 @@ class Image_Watermark_Diagnostics {
 		}
 
 		$php_version = phpversion();
-		$php_ok      = version_compare( $php_version, '7.2', '>=' );
+		$php_ok      = version_compare( $php_version, '7.3', '>=' );
 		$items[] = $this->item(
 			$php_ok ? 'php_ok' : 'php_old',
 			$php_ok ? self::STATUS_OK : self::STATUS_WARNING,
 			__( 'PHP', 'image-watermark' ),
+			/* translators: 1: Installed PHP version. */
 			sprintf( __( 'PHP %s', 'image-watermark' ), $php_version ),
-			$php_ok ? '' : __( 'PHP 7.2+ is recommended. Please upgrade your PHP version.', 'image-watermark' )
+			$php_ok ? '' : __( 'PHP 7.3+ is recommended. Please upgrade your PHP version.', 'image-watermark' )
 		);
 
 		return $items;
@@ -589,6 +640,27 @@ class Image_Watermark_Diagnostics {
 	private function build_watermark_config_items( $options ) {
 		$items          = [];
 		$watermark_type = isset( $options['watermark_image']['type'] ) ? $options['watermark_image']['type'] : 'image';
+		$rotation       = $this->plugin->get_upload_handler()->describe_rotation_capability( $options );
+
+		$items[] = $this->item(
+			'watermark_rotation',
+			self::STATUS_INFO,
+			__( 'Watermark rotation', 'image-watermark' ),
+			$rotation['rotation'] === 0
+				? __( '0 degrees (no rotation).', 'image-watermark' )
+				: sprintf( /* translators: %d: Clockwise rotation degrees. */ __( '%d degrees clockwise.', 'image-watermark' ), $rotation['rotation'] ),
+			''
+		);
+
+		if ( ! $rotation['available'] ) {
+			$items[] = $this->item(
+				$rotation['code'],
+				self::STATUS_ERROR,
+				__( 'Watermark rotation', 'image-watermark' ),
+				$rotation['message'],
+				__( 'Set rotation to 0 degrees or enable the required image-library rotation support.', 'image-watermark' )
+			);
+		}
 
 		if ( $watermark_type === 'image' ) {
 			$watermark_id = isset( $options['watermark_image']['url'] ) ? (int) $options['watermark_image']['url'] : 0;
@@ -639,7 +711,7 @@ class Image_Watermark_Diagnostics {
 				$font_ok ? 'watermark_font_ok' : 'watermark_font_missing',
 				$font_ok ? self::STATUS_OK : self::STATUS_ERROR,
 				__( 'Watermark font', 'image-watermark' ),
-				$font_ok ? $font : sprintf( __( 'Font "%s" not found.', 'image-watermark' ), $font ),
+				$font_ok ? $font : sprintf( /* translators: Font file name. */ __( 'Font "%s" not found.', 'image-watermark' ), $font ),
 				$font_ok ? '' : __( 'Select a different font in Watermark settings.', 'image-watermark' )
 			);
 		}
@@ -686,14 +758,14 @@ class Image_Watermark_Diagnostics {
 		$backup_enabled = ! empty( $options['backup']['backup_image'] );
 		$backup_dir     = defined( 'IMAGE_WATERMARK_BACKUP_DIR' ) ? IMAGE_WATERMARK_BACKUP_DIR : '';
 		$dir_exists     = $backup_dir && is_dir( $backup_dir );
-		$dir_writable   = $dir_exists && is_writable( $backup_dir );
+		$dir_writable   = $dir_exists && wp_is_writable( $backup_dir );
 
 		$items[] = $this->item(
 			$backup_enabled ? 'backup_enabled' : 'backup_disabled',
-			$backup_enabled ? self::STATUS_OK : self::STATUS_WARNING,
+			$backup_enabled ? self::STATUS_OK : self::STATUS_INFO,
 			__( 'Backup images', 'image-watermark' ),
 			$backup_enabled ? __( 'Enabled.', 'image-watermark' ) : __( 'Disabled.', 'image-watermark' ),
-			$backup_enabled ? '' : __( 'Enable backup in the Status tab to allow removing watermarks and restoring originals.', 'image-watermark' )
+			$backup_enabled ? '' : __( 'Enable backups if you want to remove future watermarks and restore originals.', 'image-watermark' )
 		);
 
 		if ( $backup_enabled ) {
@@ -733,7 +805,80 @@ class Image_Watermark_Diagnostics {
 			);
 		}
 
+		$items[] = $this->item(
+			'backup_http_access_unverified',
+			self::STATUS_INFO,
+			__( 'Backup web access', 'image-watermark' ),
+			__( 'Web access has not been tested. This does not affect watermark processing.', 'image-watermark' ),
+			__( 'Configure server-level protection for the backup directory and verify it with an unauthenticated request.', 'image-watermark' )
+		);
+
 		return $items;
+	}
+
+	/**
+	 * Return a path-free attachment inventory for the authorized diagnostics response.
+	 *
+	 * The watermarked flag is attachment-level state, so each selected target is
+	 * reported as watermarked only while that flag is set. A completed recorded
+	 * manual removal is the only retained evidence that the current operation
+	 * restored the full file and regenerated selected sizes.
+	 *
+	 * @param array  $data           Attachment metadata.
+	 * @param string $source_file    Attached full-size file path.
+	 * @param array  $upload_dir     WordPress upload directory data.
+	 * @param array  $selected_sizes Selected watermark size names.
+	 * @param bool   $is_watermarked Attachment-level watermark state.
+	 * @param bool   $backup_exists  Valid backup for the attached full file.
+	 * @param int    $attachment_id  Attachment ID.
+	 * @return array
+	 */
+	private function build_attachment_file_inventory( $data, $source_file, $upload_dir, $selected_sizes, $is_watermarked, $backup_exists, $attachment_id ) {
+		$relative_file = isset( $data['file'] ) && is_string( $data['file'] ) ? $data['file'] : '';
+		$base_dir      = isset( $upload_dir['basedir'] ) ? $upload_dir['basedir'] : '';
+		$base_url      = isset( $upload_dir['baseurl'] ) ? $upload_dir['baseurl'] : '';
+		$relative_dir  = $relative_file ? dirname( $relative_file ) : '';
+		$last_op       = $this->plugin->get_upload_handler()->get_attachment_operation_outcome( $attachment_id );
+		$restored      = is_array( $last_op ) && isset( $last_op['outcome'], $last_op['context'] ) && $last_op['outcome'] === 'complete' && $last_op['context'] === 'manual-remove';
+		$full_target   = in_array( 'full', $selected_sizes, true );
+
+		$entry = function( $path, $relative, $target, $backup, $restore ) use ( $base_url, $is_watermarked ) {
+			return [
+				'exists'                       => is_string( $path ) && is_file( $path ),
+				'watermark_target'             => (bool) $target,
+				'watermarked'                  => (bool) ( $is_watermarked && $target ),
+				'backup_exists'                => (bool) $backup,
+				'restored_by_last_operation'   => (bool) $restore,
+				'public_url_derivable'         => is_string( $base_url ) && $base_url !== '' && is_string( $relative ) && $relative !== '' && strpos( $relative, "\0" ) === false && strpos( str_replace( '\\', '/', $relative ), '../' ) === false,
+			];
+		};
+
+		$inventory = [
+			'full'  => $entry( $source_file, $relative_file, $full_target, $backup_exists, $restored && $full_target ),
+			'sizes' => [],
+		];
+
+		if ( preg_match( '/-scaled\.[^.]+$/i', basename( $relative_file ) ) ) {
+			$inventory['scaled_original'] = $entry( $source_file, $relative_file, $full_target, $backup_exists, $restored && $full_target );
+		}
+
+		if ( ! empty( $data['original_image'] ) && is_string( $data['original_image'] ) ) {
+			$original_relative = ( $relative_dir && $relative_dir !== '.' ? $relative_dir . '/' : '' ) . $data['original_image'];
+			$original_path     = $base_dir . DIRECTORY_SEPARATOR . str_replace( '/', DIRECTORY_SEPARATOR, $original_relative );
+			$inventory['original_image'] = $entry( $original_path, $original_relative, false, false, false );
+		}
+
+		foreach ( isset( $data['sizes'] ) && is_array( $data['sizes'] ) ? $data['sizes'] : [] as $name => $size ) {
+			if ( empty( $size['file'] ) || ! is_string( $size['file'] ) ) {
+				continue;
+			}
+			$size_relative = ( $relative_dir && $relative_dir !== '.' ? $relative_dir . '/' : '' ) . $size['file'];
+			$size_path     = $base_dir . DIRECTORY_SEPARATOR . str_replace( '/', DIRECTORY_SEPARATOR, $size_relative );
+			$selected      = in_array( $name, $selected_sizes, true );
+			$inventory['sizes'][ sanitize_key( $name ) ] = $entry( $size_path, $size_relative, $selected, false, $restored && $selected );
+		}
+
+		return $inventory;
 	}
 
 	/**

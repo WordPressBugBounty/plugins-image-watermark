@@ -1,15 +1,15 @@
 === Image Watermark ===
 Contributors: dfactory
-Donate link: http://www.dfactory.co/
+Donate link: https://www.dfactory.co/
 Tags: image, images, watermark, watermarking, protection
-Requires at least: 6.0
-Requires PHP: 7.0
-Tested up to: 7.0.1
-Stable tag: 2.0.12
-License: MIT License
-License URI: http://opensource.org/licenses/MIT
+Requires at least: 6.3
+Requires PHP: 7.3
+Tested up to: 7.1
+Stable tag: 2.0.13
+License: MIT
+License URI: https://opensource.org/licenses/MIT
 
-Secure and brand your images with automatic watermarks. Apply image or text overlays to new uploads and bulk process existing Media Library images with ease.
+Apply image or text watermarks to new uploads and existing Media Library images.
 
 == Description ==
 
@@ -21,14 +21,14 @@ Enhance your WordPress site's image security and branding. Image Watermark allow
 * **Flexible Application**: Automatic watermarking on uploads, manual/bulk apply/remove via Media Library.
 * **Advanced Customization**: Position watermarks precisely, adjust sizes, opacity, and more.
 * **Small Image Rules**: Skip watermarking for images below configurable minimum width and height thresholds.
-* **Backup & Restore**: Secure backups for easy watermark removal.
-* **Image Protection**: Prevent copying via right-click, drag-and-drop, and developer tools.
+* **Backup & Restore**: Optional backups support watermark removal when a validated clean backup is available.
+* **Image Protection**: Browser-side right-click, drag-and-drop, and developer-tools deterrents.
 * **Status & Diagnostics**: Review PHP, image engine, and backup-folder readiness from the built-in Status tab.
 * **Technical Excellence**: Supports JPEG, PNG, WebP; ImageMagick/GD engines; preserves metadata.
 
 Perfect for photographers, bloggers, and businesses looking to safeguard their visual content.
 
-For more information, check out the [plugin page](http://www.dfactory.co/products/image-watermark/), [documentation](http://www.dfactory.co/docs/image-watermark/), or [support forum](http://www.dfactory.co/support/forum/image-watermark/).
+For more information, check out the [plugin page](https://www.dfactory.co/products/image-watermark/), [documentation](https://www.dfactory.co/docs/image-watermark/), or [support forum](https://www.dfactory.co/support/forum/image-watermark/).
 
 = Feature Breakdown: =
 
@@ -52,7 +52,7 @@ For more information, check out the [plugin page](http://www.dfactory.co/product
 * Automatic image backup functionality (stores originals for easy restoration)
 * Option to remove watermarks (restores from backups when available)
 * Optional preservation of file timestamps during backup and restore
-* Secure backup storage with .htaccess protection
+* Backup storage follows the configured uploads location; server-level access controls must be verified by the site administrator
 
 **Image Protection:**
 * Disable right-click context menus on images
@@ -88,13 +88,13 @@ For more information, check out the [plugin page](http://www.dfactory.co/product
    - For existing images, go to Media Library > Bulk Select, choose images, and use the "Apply Watermark" bulk action.
    - Preview watermarks in the settings page and test on a sample image to ensure everything works.
 
-**Requirements**: WordPress 6.0+, PHP 7.0+ (7.2+ recommended), and either GD or ImageMagick library. If issues arise, check server compatibility in Settings > Watermark > Status tab.
+**Requirements**: WordPress 6.3+, PHP 7.3+, and either GD or ImageMagick library. If issues arise, check server compatibility in Settings > Watermark > Status tab.
 
 == Frequently Asked Questions ==
 
 = Can I remove a watermark later? =
 
-Yes. Watermark removal restores the original file from the plugin backup folder. Keep backups enabled before applying watermarks if you want removal to remain available later.
+Yes. Watermark removal restores the original file from a validated clean plugin backup. Keep backup creation enabled before applying watermarks if you want removal to remain available later. Existing valid backups remain usable even if new backup creation is later disabled.
 
 = Which image formats and libraries are supported? =
 
@@ -115,6 +115,14 @@ No. The right-click, drag-and-drop, and developer-tools protections are browser-
 3. screenshot-3.png
 
 == Changelog ==
+
+= 2.0.13 =
+* New: Watermark rotation (0-360 degrees clockwise) for image and text watermarks with live preview
+* Fix: Recover interrupted watermark operations and safely retry after concurrent requests
+* Fix: Require a validated clean backup before apply or remove changes live images
+* Fix: Remove only the mapped backup and owned temporary files when an attachment is deleted
+* Tweak: Expanded Status tab diagnostics and clearer skipped-operation reasons
+* Tweak: Minimum requirements raised to WordPress 6.3+ and PHP 7.3+
 
 = 2.0.12 =
 * New: Trust diagnostics for watermark readiness in the Status tab
@@ -344,5 +352,5 @@ Initial release
 
 == Upgrade Notice ==
 
-= 2.0.12 =
-Adds trust diagnostics for watermark readiness and fixes Imagick detection compatibility.
+= 2.0.13 =
+Adds image and text watermark rotation with live preview, plus more reliable apply/remove operations with safer backup handling. Requires WordPress 6.3+ and PHP 7.3+.

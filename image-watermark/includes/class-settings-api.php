@@ -20,6 +20,7 @@ class Image_Watermark_Settings_API {
 	private $domain = '';
 	private $plugin = '';
 	private $plugin_url = '';
+	private $asset_version = '';
 	private $object;
 	private $nested = false;
 
@@ -43,6 +44,7 @@ class Image_Watermark_Settings_API {
 		$this->object = $args['object'];
 		$this->plugin = $args['plugin'];
 		$this->plugin_url = $args['plugin_url'];
+		$this->asset_version = isset( $args['asset_version'] ) ? (string) $args['asset_version'] : '';
 
 		// actions
 		add_action( 'admin_menu', [ $this, 'admin_menu_options' ], 11 );
@@ -104,7 +106,7 @@ class Image_Watermark_Settings_API {
 		$handler = $this->prefix . '-settings-api-style';
 
 		// register and enqueue styles
-		wp_register_style( $handler, false );
+		wp_register_style( $handler, false, [], $this->asset_version );
 		wp_enqueue_style( $handler );
 
 		// add styles
@@ -253,7 +255,7 @@ class Image_Watermark_Settings_API {
 			$heading = $matches[1];
 
 		echo '
-		<div class="wrap ' . $this->prefix . '-settings-wrapper' . '" data-settings-prefix="' . esc_attr( $this->prefix ) . '">
+		<div class="wrap ' . esc_attr( $this->prefix ) . '-settings-wrapper' . '" data-settings-prefix="' . esc_attr( $this->prefix ) . '">
 			<div class="header-wrapper">
 				<span class="header-title">' . esc_html( $heading ) . '</span>
 			</div>';
@@ -337,7 +339,7 @@ class Image_Watermark_Settings_API {
 
 		if ( $display_form ) {
 			echo '
-				<form action="options.php" method="post" novalidate class="' . $this->prefix . '-settings-form">';
+				<form action="options.php" method="post" novalidate class="' . esc_attr( $this->prefix ) . '-settings-form">';
 		}
 
 		settings_fields( $setting );
@@ -380,7 +382,7 @@ class Image_Watermark_Settings_API {
 
 			submit_button( '', 'primary save-' . $setting_hyphenated, 'save_' . $setting, false, [ 'id' => 'save-' . $setting_hyphenated ] );
 
-			submit_button( __( 'Reset to defaults', $this->domain ), 'outline reset-' . $setting_hyphenated, 'reset_' . $setting, false, [ 'id' => 'reset-' . $setting_hyphenated ] );
+			submit_button( __( 'Reset to defaults', 'image-watermark' ), 'outline reset-' . $setting_hyphenated, 'reset_' . $setting, false, [ 'id' => 'reset-' . $setting_hyphenated ] );
 
 			echo '
 					</p>
@@ -390,7 +392,7 @@ class Image_Watermark_Settings_API {
 		// output sidebar if it has content
 		if ( ! empty( $sidebar_html ) ) {
 			echo '
-			<div class="' . $this->prefix . '-sidebar">' . $sidebar_html . '</div>';
+			<div class="' . esc_attr( $this->prefix ) . '-sidebar">' . wp_kses_post( $sidebar_html ) . '</div>';
 		}
 
 		echo '
@@ -768,7 +770,7 @@ class Image_Watermark_Settings_API {
 				// Text input for the hex color value.
 				$html .= '<input id="' . $input_id . '" type="text" name="' . $color_name . '" value="' . $color_value . '" class="' . $input_class . '" />';
 				// Swatch button to toggle the picker.
-				$html .= '<button type="button" class="iw-color-swatch"' . $swatch_style . ' aria-label="' . esc_attr__( 'Open color picker', $this->domain ) . '" aria-expanded="false"></button>';
+				$html .= '<button type="button" class="iw-color-swatch"' . $swatch_style . ' aria-label="' . esc_attr__( 'Open color picker', 'image-watermark' ) . '" aria-expanded="false"></button>';
 				// Vanilla-colorful picker (hidden by default).
 				$html .= '<div class="iw-color-popover" aria-hidden="true"><hex-color-picker color="' . $color_value . '"></hex-color-picker></div>';
 				$html .= '</div>';
@@ -799,16 +801,21 @@ class Image_Watermark_Settings_API {
 		}
 
 		if ( ! empty ( $args['after_field'] ) )
-			$html .= $args['after_field'];
+			$html .= wp_kses_post( $args['after_field'] );
 
 		if ( ! empty ( $args['description'] ) )
-			$html .= '<p class="description">' . $args['description'] . '</p>';
+			$html .= '<p class="description">' . wp_kses_post( $args['description'] ) . '</p>';
 
 		$html .= '</div>';
 
+		// This renderer builds the complete control markup from escaped attributes
+		// and trusted registered callbacks. wp_kses_post() is intentionally not
+		// applied here: its post-content allowlist strips form controls (input,
+		// select, textarea), leaving settings labels visible but unusable.
 		if ( ! empty( $args['return'] ) )
 			return $html;
 		else
+			// phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped -- Markup is assembled from escaped parts and trusted internal callbacks; post-content KSES is structurally invalid for form markup.
 			echo $html;
 	}
 
@@ -919,21 +926,14 @@ class Image_Watermark_Settings_API {
 	 * @return array
 	 */
 	public function validate_settings( $input ) {
-		// check capability
-		if ( ! current_user_can( 'manage_options' ) )
-			return $input;
-
-		// check option page
-		if ( empty( $_POST['option_page'] ) )
-			return $input;
-
 		// try to get setting name and ID
+		$option_page = isset( $_POST['option_page'] ) && is_scalar( $_POST['option_page'] ) ? $_POST['option_page'] : '';
 		foreach ( $this->settings as $id => $setting ) {
 			// tabs?
 			if ( is_array( $setting['option_name'] ) ) {
 				foreach ( $setting['option_name'] as $tab => $option_name ) {
 					// found valid setting?
-					if ( $option_name === $_POST['option_page'] ) {
+					if ( $option_name === $option_page ) {
 						// assign setting ID
 						$setting_id = $tab;
 
@@ -949,7 +949,7 @@ class Image_Watermark_Settings_API {
 				}
 			} else {
 				// found valid setting?
-				if ( $setting['option_name'] === $_POST['option_page'] ) {
+				if ( $setting['option_name'] === $option_page ) {
 					// assign setting ID and key
 					$setting_key = $setting_id = $id;
 
@@ -962,15 +962,21 @@ class Image_Watermark_Settings_API {
 			}
 		}
 
-		// check setting id, no need to check $setting_name since it was at the same stage
-		if ( empty( $setting_id ) )
-			return $input;
+		// Never return untrusted raw input. A known setting retains its saved value
+		// when the request is unauthorized or malformed; an unknown callback gets an
+		// inert empty array rather than data that could replace an option.
+		if ( empty( $setting_id ) || ! current_user_can( 'manage_options' ) )
+			return ! empty( $setting_name ) ? get_option( $setting_name, [] ) : [];
+
+		$fields = isset( $this->settings[$setting_key]['fields'] ) ? $this->settings[$setting_key]['fields'] : null;
+		if ( ! is_array( $input ) || ! is_array( $fields ) || empty( $fields ) )
+			return get_option( $setting_name, [] );
 
 		// save settings
 		if ( isset( $_POST['save_' . $setting_name] ) ) {
-			$input = $this->validate_input_settings( $setting_id, $setting_key, $input );
+			$input = $this->validate_input_settings( $setting_id, $setting_key, $input, get_option( $setting_name, [] ) );
 
-			add_settings_error( $setting_name, 'settings_saved', __( 'Settings saved.', $this->domain ), 'updated' );
+			add_settings_error( $setting_name, 'settings_saved', __( 'Settings saved.', 'image-watermark' ), 'updated' );
 		// reset settings
 		} elseif ( isset( $_POST['reset_' . $setting_name] ) ) {
 			// get default values
@@ -996,8 +1002,9 @@ class Image_Watermark_Settings_API {
 				}
 			}
 
-			add_settings_error( $setting_name, 'settings_restored', __( 'Settings restored to defaults.', $this->domain ), 'updated' );
-		}
+			add_settings_error( $setting_name, 'settings_restored', __( 'Settings restored to defaults.', 'image-watermark' ), 'updated' );
+		} else
+			return get_option( $setting_name, [] );
 
 		do_action( $this->prefix . '_configuration_updated', 'settings', $input );
 
@@ -1011,101 +1018,75 @@ class Image_Watermark_Settings_API {
 	 * @param array $input
 	 * @return array
 	 */
-	public function validate_input_settings( $setting_id, $setting_key, $input ) {
-		if ( ! empty( $this->settings[$setting_key]['fields'] ) ) {
-			foreach ( $this->settings[$setting_key]['fields'] as $field_id => $field ) {
-				// skip saving this field?
-				if ( ! empty( $field['skip_saving'] ) )
-					continue;
-
-				// skip invalid tab field if any
-				if ( ! empty( $field['tab'] ) && $field['tab'] !== $setting_id )
-					continue;
-
-				// handle nested input
-				if ( ! empty( $field['parent'] ) ) {
-					// check if input has parent key
-					if ( isset( $input[$field['parent']] ) && is_array( $input[$field['parent']] ) ) {
-						// custom validate function?
-						if ( ! empty( $field['validate'] ) ) {
-							// valid function?
-							if ( $this->callback_function_exists( $field['validate'] ) ) {
-								if ( $field['type'] === 'custom' )
-									$input = call_user_func( $field['validate'], $input, $field );
-								else
-									$input[$field['parent']][$field_id] = isset( $input[$field['parent']][$field_id] ) ? call_user_func( $field['validate'], $input[$field['parent']][$field_id], $field ) : $this->object->defaults[$setting_id][$field['parent']][$field_id];
-							} else
-								$input[$field['parent']][$field_id] = $this->object->defaults[$setting_id][$field['parent']][$field_id];
-						} else {
-							// field data?
-							if ( isset( $input[$field['parent']][$field_id] ) ) {
-								// make sure default value is available
-								if ( ! isset( $field['default'] ) )
-									$field['default'] = $this->object->defaults[$setting_id][$field['parent']][$field_id];
-
-								$input[$field['parent']][$field_id] = $this->validate_field( $input[$field['parent']][$field_id], $field['type'], $field );
-							} else
-								$input[$field['parent']][$field_id] = $this->object->defaults[$setting_id][$field['parent']][$field_id];
-						}
-					}
-				} else {
-					// nested?
-					if ( $this->nested ) {
-						// custom validate function?
-						if ( ! empty( $field['validate'] ) ) {
-							// valid function?
-							if ( $this->callback_function_exists( $field['validate'] ) ) {
-								if ( $field['type'] === 'custom' )
-									$input = call_user_func( $field['validate'], $input, $field );
-								else
-									$input[$setting_id][$field_id] = isset( $input[$setting_id][$field_id] ) ? call_user_func( $field['validate'], $input[$setting_id][$field_id], $field ) : $this->object->defaults[$setting_id][$field_id];
-							} else
-								$input[$setting_id][$field_id] = $this->object->defaults[$setting_id][$field_id];
-						} else {
-							// field data?
-							if ( isset( $input[$setting_id][$field_id] ) ) {
-								// make sure default value is available
-								if ( ! isset( $field['default'] ) )
-									$field['default'] = $this->object->defaults[$setting_id][$field_id];
-
-								$input[$setting_id][$field_id] = $this->validate_field( $input[$setting_id][$field_id], $field['type'], $field );
-							} else
-								$input[$setting_id][$field_id] = $this->object->defaults[$setting_id][$field_id];
-						}
-					} else {
-						// custom validate function?
-						if ( ! empty( $field['validate'] ) ) {
-							// valid function?
-							if ( $this->callback_function_exists( $field['validate'] ) ) {
-								if ( $field['type'] === 'custom' )
-									$input = call_user_func( $field['validate'], $input, $field );
-								else
-									$input[$field_id] = isset( $input[$field_id] ) ? call_user_func( $field['validate'], $input[$field_id], $field ) : $this->object->defaults[$setting_id][$field_id];
-							} else
-								$input[$field_id] = $this->object->defaults[$setting_id][$field_id];
-						} else {
-							// field data?
-							if ( isset( $input[$field_id] ) ) {
-								// make sure default value is available
-								if ( ! isset( $field['default'] ) )
-									$field['default'] = $this->object->defaults[$setting_id][$field_id];
-
-								$input[$field_id] = $this->validate_field( $input[$field_id], $field['type'], $field );
-							} else
-								$input[$field_id] = $this->object->defaults[$setting_id][$field_id];
-						}
-					}
-				}
-
-				// update input data
-				$this->input_settings = $input;
-
-				// add this field as validated
-				$this->validated_settings[] = $field_id;
-			}
+	public function validate_input_settings( $setting_id, $setting_key, $input, $saved = [] ) {
+		if ( ! is_array( $input ) || ! is_array( $saved ) || empty( $this->settings[$setting_key]['fields'] ) || ! is_array( $this->settings[$setting_key]['fields'] ) ) {
+			return $saved;
 		}
 
-		return $input;
+		$output = $saved;
+		$validated = 0;
+		foreach ( $this->settings[$setting_key]['fields'] as $field_id => $field ) {
+			if ( ! is_array( $field ) || ! empty( $field['skip_saving'] ) || ( ! empty( $field['tab'] ) && $field['tab'] !== $setting_id ) ) {
+				continue;
+			}
+			if ( empty( $field['type'] ) || $field['type'] === 'custom' ) {
+				return $saved;
+			}
+
+			$parent = ! empty( $field['parent'] ) ? $field['parent'] : null;
+			$source = $input;
+			$target =& $output;
+			if ( $parent ) {
+				if ( ! array_key_exists( $parent, $input ) ) {
+					continue;
+				}
+				if ( ! is_array( $input[$parent] ) ) {
+					return $saved;
+				}
+				$source = $input[$parent];
+				if ( ! isset( $target[$parent] ) || ! is_array( $target[$parent] ) ) {
+					$target[$parent] = [];
+				}
+				$target =& $target[$parent];
+			} elseif ( $this->nested ) {
+				if ( ! array_key_exists( $setting_id, $input ) ) {
+					continue;
+				}
+				if ( ! is_array( $input[$setting_id] ) ) {
+					return $saved;
+				}
+				$source = $input[$setting_id];
+				if ( ! isset( $target[$setting_id] ) || ! is_array( $target[$setting_id] ) ) {
+					$target[$setting_id] = [];
+				}
+				$target =& $target[$setting_id];
+			}
+
+			if ( ! array_key_exists( $field_id, $source ) ) {
+				continue;
+			}
+			$value = $source[$field_id];
+			if ( ( is_array( $value ) && $field['type'] !== 'checkbox' ) || ( $field['type'] === 'checkbox' && ! is_array( $value ) && $value !== 'empty' ) ) {
+				return $saved;
+			}
+			if ( ! empty( $field['validate'] ) ) {
+				if ( ! $this->callback_function_exists( $field['validate'] ) ) {
+					return $saved;
+				}
+				$value = call_user_func( $field['validate'], $value, $field );
+			} else {
+				$value = $this->validate_field( $value, $field['type'], $field );
+			}
+			$target[$field_id] = $value;
+			$validated++;
+			$this->validated_settings[] = $field_id;
+		}
+
+		if ( $validated === 0 ) {
+			return $saved;
+		}
+		$this->input_settings = $output;
+		return $output;
 	}
 
 	/**
