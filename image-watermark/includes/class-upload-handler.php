@@ -2325,6 +2325,21 @@ class Image_Watermark_Upload_Handler {
 				return $this->metadata_write_result( false, __( 'The JPEG metadata output could not be verified.', 'image-watermark' ) );
 			}
 
+			clearstatcache( true, $file );
+			$destination_stat = @stat( $file );
+			if ( $destination_stat === false ) {
+				return $this->metadata_write_result( false, __( 'The JPEG metadata output could not be given the image file permissions.', 'image-watermark' ) );
+			}
+			$required_mode = $destination_stat['mode'] & 0777;
+			// Rename publishes the temporary file's access bits; special bits do not belong on a JPEG output.
+			if ( ! $this->should_inject_operation_fault( 'jpeg_metadata_permission_set_failure', [ 'file' => $file, 'temp_file' => $temp_file ] ) ) {
+				@chmod( $temp_file, $required_mode );
+			}
+			clearstatcache( true, $temp_file );
+			$temp_stat = @stat( $temp_file );
+			if ( $temp_stat === false || ( $temp_stat['mode'] & 0777 ) !== $required_mode ) {
+				return $this->metadata_write_result( false, __( 'The JPEG metadata output could not be given the image file permissions.', 'image-watermark' ) );
+			}
 			// phpcs:ignore WordPress.WP.AlternativeFunctions.rename_rename -- Same-filesystem rename preserves P00-09 atomic promotion semantics.
 			if ( ! @rename( $temp_file, $file ) ) {
 				return $this->metadata_write_result( false, __( 'The verified JPEG metadata output could not replace the image.', 'image-watermark' ) );

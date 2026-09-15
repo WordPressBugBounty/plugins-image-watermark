@@ -2,14 +2,14 @@
 # This file is distributed under the MIT.
 msgid ""
 msgstr ""
-"Project-Id-Version: Image Watermark 2.0.13\n"
+"Project-Id-Version: Image Watermark 2.0.14\n"
 "Report-Msgid-Bugs-To: https://wordpress.org/support/plugin/image-watermark\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
-"POT-Creation-Date: 2026-09-14T07:33:28+00:00\n"
+"POT-Creation-Date: 2026-09-15T11:47:02+00:00\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "X-Generator: WP-CLI 2.12.0\n"
 "X-Domain: image-watermark\n"
@@ -143,14 +143,14 @@ msgstr ""
 #: image-watermark.php:477
 #: image-watermark.php:517
 #: includes/class-upload-handler.php:1766
-#: includes/class-upload-handler.php:3107
-#: includes/class-upload-handler.php:3108
+#: includes/class-upload-handler.php:3122
+#: includes/class-upload-handler.php:3123
 msgid "Watermark applied."
 msgstr ""
 
 #: image-watermark.php:478
 #: image-watermark.php:518
-#: includes/class-upload-handler.php:3877
+#: includes/class-upload-handler.php:3892
 msgid "Watermark removed."
 msgstr ""
 
@@ -1508,14 +1508,14 @@ msgstr ""
 #: includes/class-upload-handler.php:768
 #: includes/class-upload-handler.php:1430
 #: includes/class-upload-handler.php:1790
-#: includes/class-upload-handler.php:4814
+#: includes/class-upload-handler.php:4829
 msgid "Invalid attachment metadata."
 msgstr ""
 
 #: includes/class-upload-handler.php:776
 #: includes/class-upload-handler.php:1612
 #: includes/class-upload-handler.php:1817
-#: includes/class-upload-handler.php:3245
+#: includes/class-upload-handler.php:3260
 msgid "The attachment backup path is invalid."
 msgstr ""
 
@@ -1526,13 +1526,13 @@ msgstr ""
 
 #: includes/class-upload-handler.php:1382
 #: includes/class-upload-handler.php:1565
-#: includes/class-upload-handler.php:3833
+#: includes/class-upload-handler.php:3848
 msgid "Another watermark operation is already in progress. Please retry shortly."
 msgstr ""
 
 #. translators: 1: Watermark skip message.
 #: includes/class-upload-handler.php:1449
-#: includes/class-upload-handler.php:3309
+#: includes/class-upload-handler.php:3324
 #, php-format
 msgid "Image Watermark: Upload successful, but watermark skipped - %s"
 msgstr ""
@@ -1586,7 +1586,7 @@ msgid "The interrupted watermark operation cannot prove that every live target i
 msgstr ""
 
 #: includes/class-upload-handler.php:1582
-#: includes/class-upload-handler.php:3841
+#: includes/class-upload-handler.php:3856
 msgid "Watermark recovery state could not be safely recorded."
 msgstr ""
 
@@ -1621,9 +1621,9 @@ msgid "No regenerated image sizes are available for watermarking."
 msgstr ""
 
 #: includes/class-upload-handler.php:1636
-#: includes/class-upload-handler.php:3279
-#: includes/class-upload-handler.php:3285
-#: includes/class-upload-handler.php:4870
+#: includes/class-upload-handler.php:3294
+#: includes/class-upload-handler.php:3300
+#: includes/class-upload-handler.php:4885
 msgid "Failed to copy original file to backup location."
 msgstr ""
 
@@ -1744,177 +1744,182 @@ msgstr ""
 msgid "The JPEG metadata output could not be verified."
 msgstr ""
 
-#: includes/class-upload-handler.php:2330
+#: includes/class-upload-handler.php:2331
+#: includes/class-upload-handler.php:2341
+msgid "The JPEG metadata output could not be given the image file permissions."
+msgstr ""
+
+#: includes/class-upload-handler.php:2345
 msgid "The verified JPEG metadata output could not replace the image."
 msgstr ""
 
-#: includes/class-upload-handler.php:2336
+#: includes/class-upload-handler.php:2351
 msgid "The JPEG metadata output could not be written."
 msgstr ""
 
 #. translators: 1: Backup root path.
-#: includes/class-upload-handler.php:3249
+#: includes/class-upload-handler.php:3264
 #, php-format
 msgid "Backup folder could not be created: %s"
 msgstr ""
 
-#: includes/class-upload-handler.php:3258
-#: includes/class-upload-handler.php:3290
-#: includes/class-upload-handler.php:4838
-#: includes/class-upload-handler.php:4878
+#: includes/class-upload-handler.php:3273
+#: includes/class-upload-handler.php:3305
+#: includes/class-upload-handler.php:4853
+#: includes/class-upload-handler.php:4893
 msgid "The clean backup was retained, but its watermark association could not be committed."
 msgstr ""
 
-#: includes/class-upload-handler.php:3265
-#: includes/class-upload-handler.php:4850
+#: includes/class-upload-handler.php:3280
+#: includes/class-upload-handler.php:4865
 msgid "Could not read original image file."
 msgstr ""
 
 #. translators: 1: Backup subfolder path.
-#: includes/class-upload-handler.php:3270
+#: includes/class-upload-handler.php:3285
 #, php-format
 msgid "Backup subfolder could not be created: %s"
 msgstr ""
 
 #. translators: 1: Backup failure message.
-#: includes/class-upload-handler.php:3306
+#: includes/class-upload-handler.php:3321
 #, php-format
 msgid "Image Watermark: Backup failed - %s. Watermark not applied. Please check backup folder permissions."
 msgstr ""
 
-#: includes/class-upload-handler.php:3332
+#: includes/class-upload-handler.php:3347
 msgid "Watermarked files were prepared, but completion could not be safely recorded."
 msgstr ""
 
-#: includes/class-upload-handler.php:3845
+#: includes/class-upload-handler.php:3860
 msgid "Failed to restore from backup."
 msgstr ""
 
-#: includes/class-upload-handler.php:3848
+#: includes/class-upload-handler.php:3863
 msgid "The clean file was restored, but its metadata could not be safely committed."
 msgstr ""
 
-#: includes/class-upload-handler.php:3852
-#: includes/class-upload-handler.php:3869
+#: includes/class-upload-handler.php:3867
+#: includes/class-upload-handler.php:3884
 msgid "The clean file was restored, but attachment metadata could not be committed."
 msgstr ""
 
-#: includes/class-upload-handler.php:3855
+#: includes/class-upload-handler.php:3870
 msgid "The clean file was restored, but regenerated metadata could not be safely prepared for commit."
 msgstr ""
 
-#: includes/class-upload-handler.php:3858
+#: includes/class-upload-handler.php:3873
 msgid "The clean file was restored, but regenerated metadata commit was interrupted."
 msgstr ""
 
-#: includes/class-upload-handler.php:3862
+#: includes/class-upload-handler.php:3877
 msgid "The clean file was restored, but obsolete derivatives could not be safely reconciled."
 msgstr ""
 
-#: includes/class-upload-handler.php:3872
+#: includes/class-upload-handler.php:3887
 msgid "The clean file was restored, but regenerated metadata commit could not be recorded."
 msgstr ""
 
-#: includes/class-upload-handler.php:3875
+#: includes/class-upload-handler.php:3890
 msgid "The clean file was restored, but its watermark state could not be committed."
 msgstr ""
 
-#: includes/class-upload-handler.php:4126
-#: includes/class-upload-handler.php:4150
-#: includes/class-upload-handler.php:5291
+#: includes/class-upload-handler.php:4141
+#: includes/class-upload-handler.php:4165
+#: includes/class-upload-handler.php:5306
 msgid "The watermark image could not be prepared for rotation."
 msgstr ""
 
-#: includes/class-upload-handler.php:4134
-#: includes/class-upload-handler.php:5278
+#: includes/class-upload-handler.php:4149
+#: includes/class-upload-handler.php:5293
 msgid "The rotated watermark dimensions are invalid."
 msgstr ""
 
-#: includes/class-upload-handler.php:4141
-#: includes/class-upload-handler.php:5285
+#: includes/class-upload-handler.php:4156
+#: includes/class-upload-handler.php:5300
 msgid "The predicted rotated watermark allocation is unsafe."
 msgstr ""
 
-#: includes/class-upload-handler.php:4155
-#: includes/class-upload-handler.php:4192
-#: includes/class-upload-handler.php:5297
+#: includes/class-upload-handler.php:4170
+#: includes/class-upload-handler.php:4207
+#: includes/class-upload-handler.php:5312
 msgid "The watermark image could not be rotated."
 msgstr ""
 
-#: includes/class-upload-handler.php:4162
+#: includes/class-upload-handler.php:4177
 msgid "The rotated watermark image has invalid dimensions."
 msgstr ""
 
-#: includes/class-upload-handler.php:4170
-#: includes/class-upload-handler.php:4178
-#: includes/class-upload-handler.php:5308
-#: includes/class-upload-handler.php:5317
+#: includes/class-upload-handler.php:4185
+#: includes/class-upload-handler.php:4193
+#: includes/class-upload-handler.php:5323
+#: includes/class-upload-handler.php:5332
 msgid "The scaled rotated watermark cannot fit the target image."
 msgstr ""
 
-#: includes/class-upload-handler.php:4182
-#: includes/class-upload-handler.php:4309
+#: includes/class-upload-handler.php:4197
+#: includes/class-upload-handler.php:4324
 msgid "The rotated watermark opacity could not be applied."
 msgstr ""
 
-#: includes/class-upload-handler.php:4187
-#: includes/class-upload-handler.php:5324
+#: includes/class-upload-handler.php:4202
+#: includes/class-upload-handler.php:5339
 msgid "The rotated watermark image could not be composed."
 msgstr ""
 
-#: includes/class-upload-handler.php:4274
-#: includes/class-upload-handler.php:4284
-#: includes/class-upload-handler.php:4507
+#: includes/class-upload-handler.php:4289
+#: includes/class-upload-handler.php:4299
+#: includes/class-upload-handler.php:4522
 msgid "The watermark text could not be prepared for rotation."
 msgstr ""
 
-#: includes/class-upload-handler.php:4298
-#: includes/class-upload-handler.php:4319
-#: includes/class-upload-handler.php:4513
+#: includes/class-upload-handler.php:4313
+#: includes/class-upload-handler.php:4334
+#: includes/class-upload-handler.php:4528
 msgid "The watermark text could not be rotated."
 msgstr ""
 
-#: includes/class-upload-handler.php:4305
-#: includes/class-upload-handler.php:4520
+#: includes/class-upload-handler.php:4320
+#: includes/class-upload-handler.php:4535
 msgid "The scaled rotated watermark text cannot fit the target image."
 msgstr ""
 
-#: includes/class-upload-handler.php:4314
-#: includes/class-upload-handler.php:4527
+#: includes/class-upload-handler.php:4329
+#: includes/class-upload-handler.php:4542
 msgid "The rotated watermark text could not be composed."
 msgstr ""
 
-#: includes/class-upload-handler.php:4446
+#: includes/class-upload-handler.php:4461
 msgid "Watermark rotation is not available in GD on this server."
 msgstr ""
 
-#: includes/class-upload-handler.php:4461
-#: includes/class-upload-handler.php:4477
+#: includes/class-upload-handler.php:4476
+#: includes/class-upload-handler.php:4492
 msgid "The watermark text could not be measured for rotation."
 msgstr ""
 
-#: includes/class-upload-handler.php:4496
+#: includes/class-upload-handler.php:4511
 msgid "The predicted rotated text allocation is unsafe."
 msgstr ""
 
-#: includes/class-upload-handler.php:4501
+#: includes/class-upload-handler.php:4516
 msgid "The watermark text layer could not be allocated."
 msgstr ""
 
-#: includes/class-upload-handler.php:4822
+#: includes/class-upload-handler.php:4837
 msgid "Invalid attachment backup path."
 msgstr ""
 
-#: includes/class-upload-handler.php:4830
+#: includes/class-upload-handler.php:4845
 msgid "Original file not found."
 msgstr ""
 
 #. translators: 1: Backup folder path.
-#: includes/class-upload-handler.php:4861
+#: includes/class-upload-handler.php:4876
 #, php-format
 msgid "Backup folder is not writable: %s"
 msgstr ""
 
-#: includes/class-upload-handler.php:4981
+#: includes/class-upload-handler.php:4996
 msgid "Image Watermark: File timestamps could not be preserved on this server. Copies were created, but dates may differ."
 msgstr ""

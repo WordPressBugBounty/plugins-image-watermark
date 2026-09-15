@@ -2,7 +2,7 @@
 /*
 Plugin Name: Image Watermark
 Description: Secure and brand your images with automatic watermarks. Apply image or text overlays to new uploads and bulk process existing Media Library images with ease.
-Version: 2.0.13
+Version: 2.0.14
 Requires at least: 6.3
 Requires PHP: 7.3
 Author: dFactory
@@ -31,7 +31,7 @@ if ( ! defined( 'ABSPATH' ) )
  * Image Watermark class.
  *
  * @class Image_Watermark
- * @version	2.0.13
+ * @version	2.0.14
  */
 final class Image_Watermark {
 
@@ -108,7 +108,7 @@ final class Image_Watermark {
 				'preserve_timestamps' => false
 			]
 		],
-		'version'	 => '2.0.13'
+		'version'	 => '2.0.14'
 	];
 	public $options = [];
 

@@ -5,7 +5,7 @@ Tags: image, images, watermark, watermarking, protection
 Requires at least: 6.3
 Requires PHP: 7.3
 Tested up to: 7.1
-Stable tag: 2.0.13
+Stable tag: 2.0.14
 License: MIT
 License URI: https://opensource.org/licenses/MIT
 
@@ -115,6 +115,9 @@ No. The right-click, drag-and-drop, and developer-tools protections are browser-
 3. screenshot-3.png
 
 == Changelog ==
+
+= 2.0.14 =
+* Fix: Preserve the original JPEG file permissions when watermarking rewrites image metadata
 
 = 2.0.13 =
 * New: Watermark rotation (0-360 degrees clockwise) for image and text watermarks with live preview
@@ -352,5 +355,5 @@ Initial release
 
 == Upgrade Notice ==
 
-= 2.0.13 =
-Adds image and text watermark rotation with live preview, plus more reliable apply/remove operations with safer backup handling. Requires WordPress 6.3+ and PHP 7.3+.
+= 2.0.14 =
+Keeps the original image file permissions when watermarking rewrites JPEG metadata.
