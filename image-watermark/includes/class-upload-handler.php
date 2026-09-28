@@ -7,6 +7,39 @@ if ( ! defined( 'ABSPATH' ) ) {
 class Image_Watermark_Upload_Handler {
 
 	/**
+	 * Private attachment meta key holding the deferred client-side upload claim.
+	 * WordPress removes it with the attachment's other post meta.
+	 */
+	const CLIENT_SIDE_CLAIM_META_KEY = '_iw_client_side_upload';
+
+	/** Deferred client-side claim schema version. */
+	const CLIENT_SIDE_CLAIM_VERSION = 1;
+
+	/** Retryable finalize attempts before a pending claim becomes terminal. */
+	const CLIENT_SIDE_CLAIM_MAX_ATTEMPTS = 3;
+
+	/** Seconds a pending claim may wait for its finalize request. */
+	const CLIENT_SIDE_CLAIM_TTL = DAY_IN_SECONDS;
+
+	/** Seconds after which diagnostics report a pending claim as incomplete. */
+	const CLIENT_SIDE_CLAIM_STALE_AFTER = HOUR_IN_SECONDS;
+
+	/**
+	 * Private attachment meta key holding the sub-size payload of a finalize
+	 * withheld because another watermark operation held the lease.
+	 */
+	const CLIENT_SIDE_PAYLOAD_META_KEY = '_iw_client_side_finalize_payload';
+
+	/** WordPress 7.1 sideload provenance meta key (one row per produced file). */
+	const CLIENT_SIDE_PROVENANCE_META_KEY = '_wp_sideloaded_file';
+
+	/** Maximum aged claims removed per sweep. */
+	const CLIENT_SIDE_SWEEP_LIMIT = 100;
+
+	/** Maximum unregistered sideloaded files listed in diagnostics. */
+	const CLIENT_SIDE_ORPHAN_REPORT_LIMIT = 20;
+
+	/**
 	 * Plugin instance.
 	 *
 	 * @var Image_Watermark
@@ -85,6 +118,47 @@ class Image_Watermark_Upload_Handler {
 	private $last_renderer_failure = [ 'code' => '', 'message' => '' ];
 
 	/**
+	 * Request-local stack of recognized WordPress 7.1 client-side media REST
+	 * phases. Each entry is pushed before and popped after its own callback.
+	 *
+	 * @var array[]
+	 */
+	private $client_side_phases = [];
+
+	/**
+	 * Request-local eligible uploads of a client-side create request, waiting
+	 * for rest_after_insert_attachment to provide the owning attachment.
+	 *
+	 * @var array[]
+	 */
+	private $client_side_candidates = [];
+
+	/**
+	 * Request-local finalize pass evidence keyed by the REST request object.
+	 * Each entry is used to verify the matching metadata commit.
+	 *
+	 * @var array<string,array>
+	 */
+	private $client_side_finalize = [];
+
+	/**
+	 * Attachment ID whose running automatic operation may not take the reapply
+	 * (restore and regenerate) branch. Scoped by attachment so a nested operation
+	 * cannot inherit another finalize request's policy.
+	 *
+	 * @var int
+	 */
+	private $initial_apply_only_attachment_id = 0;
+
+	/**
+	 * Request-local attachment IDs whose next finalize metadata write is
+	 * withheld. Armed after every metadata filter has run and used once.
+	 *
+	 * @var array<int,bool>
+	 */
+	private $client_side_withheld_writes = [];
+
+	/**
 	 * Upload handler constructor.
 	 *
 	 * @param Image_Watermark $plugin
@@ -94,6 +168,11 @@ class Image_Watermark_Upload_Handler {
 		add_action( 'admin_notices', [ $this, 'render_persisted_auto_notices' ] );
 		add_filter( 'pre_delete_attachment', [ $this, 'pre_delete_attachment' ], 10, 3 );
 		add_action( 'deleted_post', [ $this, 'after_delete_attachment' ], 10, 2 );
+		add_filter( 'rest_request_before_callbacks', [ $this, 'begin_client_side_media_request' ], 10, 3 );
+		add_filter( 'rest_dispatch_request', [ $this, 'gate_client_side_media_request' ], 10, 4 );
+		add_filter( 'rest_request_after_callbacks', [ $this, 'end_client_side_media_request' ], 10, 3 );
+		add_action( 'rest_after_insert_attachment', [ $this, 'claim_client_side_upload' ], 10, 3 );
+		add_action( 'wp_scheduled_delete', [ $this, 'sweep_client_side_claims' ] );
 		register_shutdown_function( [ $this, 'release_pending_attachment_deletion_fences' ] );
 	}
 
@@ -147,6 +226,33 @@ class Image_Watermark_Upload_Handler {
 	}
 
 	/**
+	 * Describe a deferred client-side upload claim without mutating it. A claim
+	 * still pending after CLIENT_SIDE_CLAIM_STALE_AFTER seconds with no recorded
+	 * finalize attempt means WordPress never finalized the upload, so its sizes
+	 * were not automatically watermarked.
+	 *
+	 * @param int $attachment_id Attachment ID.
+	 * @return array Empty when there is no valid claim.
+	 */
+	public function describe_client_side_claim( $attachment_id ) {
+		$row = $this->read_client_side_claim_row( (int) $attachment_id );
+		if ( ! is_array( $row ) ) {
+			return [];
+		}
+		$claim = $row['claim'];
+
+		return [
+			'state'      => $claim['state'],
+			'code'       => $claim['code'],
+			'attempts'   => $claim['attempts'],
+			'created_at' => $claim['created_at'],
+			'stale'      => $claim['state'] === 'pending' && $claim['created_at'] + self::CLIENT_SIDE_CLAIM_STALE_AFTER < time(),
+			'aged'       => $claim['state'] !== 'pending' && $claim['updated_at'] + self::CLIENT_SIDE_CLAIM_TTL < time(),
+			'deferred'   => $this->read_client_side_payload( (int) $attachment_id ) !== false,
+		];
+	}
+
+	/**
 	 * Return the execution service's current eligibility decision without mutation.
 	 *
 	 * @param int    $attachment_id Attachment ID.
@@ -154,8 +260,17 @@ class Image_Watermark_Upload_Handler {
 	 * @return array
 	 */
 	public function describe_operation_eligibility( $attachment_id, $context = 'manual-apply' ) {
+		$attachment_id = (int) $attachment_id;
+		if ( in_array( $context, [ 'manual-apply', 'manual-remove' ], true ) && $this->is_unfinalized_client_side_replacement( $attachment_id, wp_get_attachment_metadata( $attachment_id, true ) ) ) {
+			return [
+				'valid'   => false,
+				'error'   => $this->client_side_unfinalized_message(),
+				'warning' => null,
+				'code'    => 'client_side_upload_unfinalized',
+			];
+		}
 		$options = $this->normalize_rotation_options( apply_filters( 'iw_watermark_options', $this->plugin->options ) );
-		return $this->validate_watermark_eligibility( $options, (int) $attachment_id, $context );
+		return $this->validate_watermark_eligibility( $options, $attachment_id, $context );
 	}
 
 	/**
@@ -266,12 +381,8 @@ class Image_Watermark_Upload_Handler {
 	 * @return array
 	 */
 	public function handle_upload_files( $file ) {
-		if ( ! $this->plugin->get_extension() ) {
-			$this->plugin->check_extensions();
-
-			if ( ! $this->plugin->get_extension() ) {
-				return $file;
-			}
+		if ( ! $this->ensure_image_engine() ) {
+			return $file;
 		}
 
 		$is_admin = $this->is_admin_upload_request();
@@ -282,56 +393,93 @@ class Image_Watermark_Upload_Handler {
 			return $file;
 		}
 
-		$options = $this->plugin->options;
-		$allowed_mime = $this->plugin->get_allowed_mime_types();
-		$watermark_type = isset( $options['watermark_image']['type'] ) ? $options['watermark_image']['type'] : 'image';
+		$phase = $this->current_client_side_phase();
 
-		if ( $is_admin === true ) {
-			if ( $options['watermark_image']['plugin_off'] == 1 && in_array( $file['type'], $allowed_mime, true ) ) {
-				$should_apply = false;
+		// Browser-generated derivatives are processed by the finalize request that
+		// registers them; a sideloaded file never owns an automatic callback.
+		if ( $phase !== null && $phase['phase'] === 'sideload' ) {
+			return $file;
+		}
 
-				if ( $watermark_type === 'image' ) {
-					$should_apply = wp_attachment_is_image( $options['watermark_image']['url'] );
-				} elseif ( $watermark_type === 'text' ) {
-					$text_string = isset( $options['watermark_image']['text_string'] ) ? trim( $options['watermark_image']['text_string'] ) : '';
-					if ( ! empty( $text_string ) ) {
-						// Validate font availability
-						$font = isset( $options['watermark_image']['text_font'] ) ? $options['watermark_image']['text_font'] : 'Lato-Regular.ttf';
-						$font_path = $this->plugin->get_font_path( $font );
-						$should_apply = $font_path && file_exists( $font_path );
-						if ( ! $should_apply ) {
-							$this->maybe_add_missing_font_notice( $font );
-						}
-					}
-				}
+		// Only the create request's own upload, which WordPress handles before any
+		// other upload in that callback, is deferred. A nested upload (for example
+		// from an add_attachment hook) keeps the conventional path.
+		$client_side_create = $phase !== null && $phase['phase'] === 'create' && empty( $phase['upload_seen'] );
+		if ( $client_side_create ) {
+			$this->client_side_phases[ count( $this->client_side_phases ) - 1 ]['upload_seen'] = true;
+		}
 
-					if ( $should_apply ) {
-						$this->register_pending_auto_upload( $file, $is_admin );
-					}
-			}
+		if ( ! is_array( $file ) || ! isset( $file['type'] ) || ! $this->is_automatic_upload_enabled( $file['type'], $is_admin ) ) {
+			return $file;
+		}
+
+		if ( $client_side_create ) {
+			$this->register_client_side_candidate( $file, $is_admin, $phase['request'] );
 		} else {
-			if ( $options['watermark_image']['frontend_active'] == 1 && in_array( $file['type'], $allowed_mime, true ) ) {
-				$should_apply = false;
-
-				if ( $watermark_type === 'image' ) {
-					$should_apply = wp_attachment_is_image( $options['watermark_image']['url'] );
-				} elseif ( $watermark_type === 'text' ) {
-					$text_string = isset( $options['watermark_image']['text_string'] ) ? trim( $options['watermark_image']['text_string'] ) : '';
-					if ( ! empty( $text_string ) ) {
-						// Validate font availability
-						$font = isset( $options['watermark_image']['text_font'] ) ? $options['watermark_image']['text_font'] : 'Lato-Regular.ttf';
-						$font_path = $this->plugin->get_font_path( $font );
-						$should_apply = $font_path && file_exists( $font_path );
-					}
-				}
-
-					if ( $should_apply ) {
-						$this->register_pending_auto_upload( $file, $is_admin );
-					}
-			}
+			$this->register_pending_auto_upload( $file, $is_admin );
 		}
 
 		return $file;
+	}
+
+	/**
+	 * Make sure an image engine is selected, detecting one when needed.
+	 *
+	 * @return bool
+	 */
+	private function ensure_image_engine() {
+		if ( ! $this->plugin->get_extension() ) {
+			$this->plugin->check_extensions();
+		}
+
+		return (bool) $this->plugin->get_extension();
+	}
+
+	/**
+	 * Shared automatic-upload gate for conventional and client-side uploads:
+	 * engine, admin plugin_off versus frontend frontend_active, allowed MIME type,
+	 * and a usable image or text watermark configuration.
+	 *
+	 * @param string $mime_type Upload MIME type.
+	 * @param bool   $is_admin Whether admin automatic rules apply.
+	 * @return bool
+	 */
+	private function is_automatic_upload_enabled( $mime_type, $is_admin ) {
+		if ( ! $this->ensure_image_engine() ) {
+			return false;
+		}
+
+		$options = $this->plugin->options;
+		$flag = $is_admin ? 'plugin_off' : 'frontend_active';
+
+		if ( ! isset( $options['watermark_image'][ $flag ] ) || $options['watermark_image'][ $flag ] != 1 || ! in_array( $mime_type, $this->plugin->get_allowed_mime_types(), true ) ) {
+			return false;
+		}
+
+		$watermark_type = isset( $options['watermark_image']['type'] ) ? $options['watermark_image']['type'] : 'image';
+
+		if ( $watermark_type === 'image' ) {
+			return (bool) wp_attachment_is_image( $options['watermark_image']['url'] );
+		}
+
+		if ( $watermark_type === 'text' ) {
+			$text_string = isset( $options['watermark_image']['text_string'] ) ? trim( $options['watermark_image']['text_string'] ) : '';
+			if ( empty( $text_string ) ) {
+				return false;
+			}
+
+			// Validate font availability
+			$font = isset( $options['watermark_image']['text_font'] ) ? $options['watermark_image']['text_font'] : 'Lato-Regular.ttf';
+			$font_path = $this->plugin->get_font_path( $font );
+			$available = $font_path && file_exists( $font_path );
+			if ( ! $available && $is_admin ) {
+				$this->maybe_add_missing_font_notice( $font );
+			}
+
+			return (bool) $available;
+		}
+
+		return false;
 	}
 
 	/**
@@ -401,6 +549,35 @@ class Image_Watermark_Upload_Handler {
 	 * @return int|false
 	 */
 	private function find_pending_auto_upload( $data, $attachment_id ) {
+		$paths = $this->attachment_upload_paths( $data, $attachment_id );
+
+		if ( empty( $paths ) ) {
+			return false;
+		}
+		foreach ( $this->pending_auto_uploads as $index => $pending ) {
+			if ( ! isset( $pending['file'] ) || ! is_string( $pending['file'] ) ) {
+				continue;
+			}
+
+			foreach ( $paths as $candidate ) {
+				if ( $this->paths_match( $pending['file'], $candidate ) ) {
+					return $index;
+				}
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * Return the upload paths an attachment metadata callback owns: its attached
+	 * file and, for a scaled or rotated main file, the untouched original upload.
+	 *
+	 * @param array $data Attachment metadata.
+	 * @param int   $attachment_id Attachment ID.
+	 * @return string[]
+	 */
+	private function attachment_upload_paths( $data, $attachment_id ) {
 		$paths = [];
 		$metadata_path = false;
 		$upload_dir = wp_upload_dir();
@@ -425,22 +602,7 @@ class Image_Watermark_Upload_Handler {
 			}
 		}
 
-		if ( empty( $paths ) ) {
-			return false;
-		}
-		foreach ( $this->pending_auto_uploads as $index => $pending ) {
-			if ( ! isset( $pending['file'] ) || ! is_string( $pending['file'] ) ) {
-				continue;
-			}
-
-			foreach ( $paths as $candidate ) {
-				if ( $this->paths_match( $pending['file'], $candidate ) ) {
-					return $index;
-				}
-			}
-		}
-
-		return false;
+		return $paths;
 	}
 
 	/** @return string|false */
@@ -487,6 +649,1332 @@ class Image_Watermark_Upload_Handler {
 	}
 
 	/**
+	 * Recognize the exact WordPress 7.1 client-side media REST phases before
+	 * their callback runs. This filter runs before the route permission check,
+	 * so it only records the phase; decisions with side effects wait for
+	 * gate_client_side_media_request(). Other requests, and WordPress versions
+	 * without the sideload/finalize routes, pass through untouched.
+	 *
+	 * @param mixed           $response Current response or error.
+	 * @param array           $handler Matched route handler.
+	 * @param WP_REST_Request $request Request.
+	 * @return mixed
+	 */
+	public function begin_client_side_media_request( $response, $handler, $request ) {
+		$phase = $this->recognize_client_side_media_phase( $handler, $request );
+		if ( $phase === null ) {
+			return $response;
+		}
+
+		$phase['dispatched'] = false;
+		$phase['withheld'] = null;
+		if ( $phase['phase'] === 'sideload' ) {
+			// A 'scaled' or 'original' sideload replaces the attached file; the
+			// after-callback extends the claim's ownership chain to the new file.
+			$phase['attached_before'] = get_post_meta( $phase['attachment_id'], '_wp_attached_file', true );
+		}
+		$this->client_side_phases[] = $phase;
+		if ( $phase['phase'] === 'finalize' ) {
+			add_filter( 'wp_generate_attachment_metadata', [ $this, 'apply_client_side_finalize_watermark' ], 10, 3 );
+			add_filter( 'wp_generate_attachment_metadata', [ $this, 'capture_client_side_finalize_metadata' ], PHP_INT_MAX, 3 );
+			add_filter( 'update_post_metadata', [ $this, 'withhold_client_side_metadata_write' ], PHP_INT_MAX, 3 );
+		}
+
+		return $response;
+	}
+
+	/**
+	 * Gate a recognized sideload or finalize after WordPress has authorized it
+	 * and before its callback writes anything. A non-null result replaces the
+	 * callback, so a refused request leaves files and metadata untouched.
+	 *
+	 * @param mixed           $result Dispatch result.
+	 * @param WP_REST_Request $request Request.
+	 * @param string          $route Matched route.
+	 * @param array           $handler Matched route handler.
+	 * @return mixed
+	 */
+	public function gate_client_side_media_request( $result, $request, $route = '', $handler = [] ) {
+		$index = $this->client_side_phase_index( $request );
+		if ( $result !== null || $index === false ) {
+			return $result;
+		}
+
+		$this->client_side_phases[ $index ]['dispatched'] = true;
+		$phase = $this->client_side_phases[ $index ];
+		$attachment_id = $phase['attachment_id'];
+
+		if ( $phase['phase'] === 'sideload' ) {
+			if ( $this->is_attachment_watermarked( $attachment_id, true ) ) {
+				return $this->refuse_client_side_request( $index, 'iw_client_side_sideload_withheld', __( 'This image is already watermarked, so a new unwatermarked file cannot be added to it. Re-upload the image instead.', 'image-watermark' ), false );
+			}
+			if ( in_array( $request['image_size'], [ 'scaled', 'original' ], true ) && $this->is_operation_lease_held( $attachment_id ) ) {
+				return $this->refuse_client_side_request( $index, 'iw_client_side_sideload_busy', __( 'Another watermark operation is running on this image. Please retry shortly.', 'image-watermark' ), true );
+			}
+		} elseif ( $phase['phase'] === 'finalize' ) {
+			$sub_sizes = $this->client_side_request_sub_sizes( $request );
+			$row = $this->read_client_side_claim_row( $attachment_id );
+			$rendered = is_array( $row ) && $row['claim']['state'] === 'rendered';
+			if ( ! $rendered && $this->is_attachment_watermarked( $attachment_id, true ) && $this->client_side_names_add_files( $attachment_id, $this->client_side_sub_size_files( $sub_sizes ) ) ) {
+				$this->settle_withheld_client_side_finalize( $attachment_id );
+				return $this->refuse_client_side_request( $index, 'iw_client_side_finalize_withheld', $this->client_side_withheld_message(), false );
+			}
+			if ( $this->is_operation_lease_held( $attachment_id ) ) {
+				$this->defer_busy_client_side_finalize( $attachment_id, $sub_sizes );
+				return $this->refuse_client_side_request( $index, 'iw_client_side_finalize_busy', $this->client_side_busy_message(), true );
+			}
+		}
+
+		return $result;
+	}
+
+	/**
+	 * Close the phase opened for this exact request, report a withheld
+	 * finalize truthfully, consume a claim whose finalized metadata WordPress
+	 * persisted, and remove temporary callbacks.
+	 *
+	 * @param mixed           $response Callback response.
+	 * @param array           $handler Matched route handler.
+	 * @param WP_REST_Request $request Request.
+	 * @return mixed
+	 */
+	public function end_client_side_media_request( $response, $handler, $request ) {
+		$index = $this->client_side_phase_index( $request );
+		if ( $index === false ) {
+			return $response;
+		}
+
+		$phase = $this->client_side_phases[ $index ];
+		array_splice( $this->client_side_phases, $index, 1 );
+
+		try {
+			if ( ! empty( $phase['withheld'] ) ) {
+				// The callback's success response would imply that the submitted
+				// sizes were registered; nothing was committed.
+				$response = new WP_Error( $phase['withheld']['code'], $phase['withheld']['message'], [ 'status' => 409, 'retryable' => $phase['withheld']['retryable'] ] );
+			} elseif ( $phase['phase'] === 'finalize' ) {
+				$this->complete_client_side_finalize( $phase, $response );
+			} elseif ( $phase['phase'] === 'sideload' ) {
+				$this->track_client_side_replacement( $phase, $response );
+			}
+		} finally {
+			if ( $phase['phase'] === 'create' ) {
+				$this->client_side_candidates = array_values( array_filter( $this->client_side_candidates, function( $candidate ) use ( $phase ) {
+					return ! isset( $candidate['request'] ) || $candidate['request'] !== $phase['request'];
+				} ) );
+			}
+			if ( $phase['phase'] === 'finalize' ) {
+				unset( $this->client_side_finalize[ $this->client_side_request_key( $phase['request'] ) ] );
+				unset( $this->client_side_withheld_writes[ $phase['attachment_id'] ] );
+				$finalize_open = false;
+				foreach ( $this->client_side_phases as $remaining ) {
+					$finalize_open = $finalize_open || $remaining['phase'] === 'finalize';
+				}
+				if ( ! $finalize_open ) {
+					remove_filter( 'wp_generate_attachment_metadata', [ $this, 'apply_client_side_finalize_watermark' ], 10 );
+					remove_filter( 'wp_generate_attachment_metadata', [ $this, 'capture_client_side_finalize_metadata' ], PHP_INT_MAX );
+					remove_filter( 'update_post_metadata', [ $this, 'withhold_client_side_metadata_write' ], PHP_INT_MAX );
+				}
+			}
+		}
+
+		return $response;
+	}
+
+	/**
+	 * Persist the deferred claim once the client-side create request has inserted
+	 * the attachment that owns an eligible candidate upload.
+	 *
+	 * @param WP_Post         $attachment Inserted attachment.
+	 * @param WP_REST_Request $request Request.
+	 * @param bool            $creating Whether the attachment was created.
+	 * @return void
+	 */
+	public function claim_client_side_upload( $attachment, $request, $creating ) {
+		$phase = $this->current_client_side_phase();
+		if ( ! $creating || empty( $this->client_side_candidates ) || $phase === null || $phase['phase'] !== 'create' || $phase['request'] !== $request || ! $attachment instanceof WP_Post || $attachment->post_type !== 'attachment' ) {
+			return;
+		}
+
+		$attachment_id = (int) $attachment->ID;
+		$relative = get_post_meta( $attachment_id, '_wp_attached_file', true );
+		$identity = $this->operation_path_identity( get_attached_file( $attachment_id ), wp_upload_dir() );
+		if ( ! is_string( $relative ) || $relative === '' || $identity === false ) {
+			return;
+		}
+
+		foreach ( $this->client_side_candidates as $index => $candidate ) {
+			if ( ! isset( $candidate['request'] ) || $candidate['request'] !== $request || ! $this->paths_match( $candidate['file'], $identity['path'] ) ) {
+				continue;
+			}
+
+			unset( $this->client_side_candidates[ $index ] );
+			$now = time();
+			add_post_meta( $attachment_id, self::CLIENT_SIDE_CLAIM_META_KEY, [
+				'version'       => self::CLIENT_SIDE_CLAIM_VERSION,
+				'attachment_id' => $attachment_id,
+				'file'          => wp_normalize_path( $relative ),
+				'files'         => [ wp_normalize_path( $relative ) ],
+				'is_admin'      => (bool) $candidate['is_admin'],
+				'state'         => 'pending',
+				'code'          => '',
+				'fingerprint'   => '',
+				'operation_id'  => '',
+				'attempts'      => 0,
+				'created_at'    => $now,
+				'updated_at'    => $now,
+			], true );
+			return;
+		}
+	}
+
+	/**
+	 * Apply the deferred automatic watermark during the matching finalize
+	 * request's "update" metadata pass, once, through the existing operation.
+	 *
+	 * @param array  $data Finalized attachment metadata.
+	 * @param int    $attachment_id Attachment ID.
+	 * @param string $context Metadata generation context.
+	 * @return array
+	 */
+	public function apply_client_side_finalize_watermark( $data, $attachment_id, $context = '' ) {
+		$attachment_id = (int) $attachment_id;
+		$phase = $this->current_client_side_phase();
+		if ( $context !== 'update' || $phase === null || $phase['phase'] !== 'finalize' || $phase['attachment_id'] !== $attachment_id || ! empty( $phase['withheld'] ) || $this->get_internal_operation_guard( $attachment_id ) ) {
+			return $data;
+		}
+
+		$index = $this->client_side_phase_index( $phase['request'] );
+		$fingerprint = $this->client_side_metadata_fingerprint( $data );
+		if ( $fingerprint !== false ) {
+			$this->begin_client_side_finalize_pass( $phase, $fingerprint );
+		}
+
+		// No claim, duplicate rows, and unreadable values all fail closed.
+		$row = $this->read_client_side_claim_row( $attachment_id );
+
+		// Never register a new clean file on a watermarked attachment, whether or
+		// not a claim still exists. Rechecked here because another owner may have
+		// committed the flag after the dispatch gate. The one exception is the
+		// exact layout a rendered claim already watermarked, whose first commit
+		// was lost: those files are this claim's watermarked output.
+		if ( $this->is_attachment_watermarked( $attachment_id, true ) && $this->client_side_metadata_adds_files( $attachment_id, $data ) ) {
+			$own_retry = $fingerprint !== false && is_array( $row ) && $row['claim']['state'] === 'rendered' && $row['claim']['fingerprint'] !== '' && hash_equals( $row['claim']['fingerprint'], $fingerprint ) && $this->client_side_claim_owns_metadata( $row['claim'], $attachment_id, $data );
+			if ( ! $own_retry ) {
+				$this->withhold_client_side_finalize( $index, $attachment_id, 'withheld' );
+				return $data;
+			}
+		}
+		if ( $fingerprint === false ) {
+			return $data;
+		}
+
+		if ( ! is_array( $row ) ) {
+			return $data;
+		}
+		$claim = $row['claim'];
+
+		if ( ! $this->client_side_claim_owns_metadata( $claim, $attachment_id, $data ) ) {
+			// Finalize did run, so this is recorded as a mismatch rather than
+			// left pending as though the browser never finished.
+			if ( $claim['state'] === 'pending' ) {
+				$this->transition_client_side_claim( $attachment_id, $row, [ 'state' => 'terminal', 'code' => 'claim_mismatch', 'fingerprint' => $fingerprint ] );
+				$this->record_client_side_outcome( $attachment_id, 'client_side_claim_mismatch', __( 'Automatic watermarking was skipped because the finalized upload did not match the file recorded when the upload started. Apply the watermark manually.', 'image-watermark' ) );
+			}
+			return $data;
+		}
+
+		// Only a pending claim renders. A retried finalize of a rendered or
+		// terminal claim lets WordPress recommit the metadata without a second
+		// render, and never reaches the reapply/restore path.
+		if ( $claim['state'] !== 'pending' ) {
+			return $data;
+		}
+
+		if ( $claim['created_at'] + self::CLIENT_SIDE_CLAIM_TTL < time() ) {
+			$this->transition_client_side_claim( $attachment_id, $row, [ 'state' => 'terminal', 'code' => 'claim_expired', 'fingerprint' => $fingerprint ] );
+			$this->record_client_side_outcome( $attachment_id, 'client_side_claim_expired', __( 'Automatic watermarking was skipped because the upload was finalized more than 24 hours after it started. Apply the watermark manually.', 'image-watermark' ) );
+			return $data;
+		}
+
+		if ( $this->is_attachment_watermarked( $attachment_id ) ) {
+			$this->transition_client_side_claim( $attachment_id, $row, [ 'state' => 'terminal', 'code' => 'already_watermarked', 'fingerprint' => $fingerprint ] );
+			return $data;
+		}
+
+		// Current settings decide, under the admin/frontend mode of the upload.
+		if ( ! $this->is_automatic_upload_enabled( get_post_mime_type( $attachment_id ), $claim['is_admin'] ) ) {
+			$this->transition_client_side_claim( $attachment_id, $row, [ 'state' => 'terminal', 'code' => 'automatic_disabled', 'fingerprint' => $fingerprint ] );
+			return $data;
+		}
+
+		$previous_is_admin = $this->is_admin;
+		$this->is_admin = $claim['is_admin'];
+		$this->last_operation_outcome = [];
+		$previous_initial_apply_only_attachment_id = $this->initial_apply_only_attachment_id;
+		$this->initial_apply_only_attachment_id = $attachment_id;
+
+		try {
+			$result = $this->apply_watermark( $data, $attachment_id );
+		} finally {
+			$this->is_admin = $previous_is_admin;
+			$this->initial_apply_only_attachment_id = $previous_initial_apply_only_attachment_id;
+		}
+
+		$outcome = $this->last_operation_outcome;
+		$code = isset( $outcome['code'] ) ? $outcome['code'] : 'not_processed';
+
+		if ( $code === 'busy' ) {
+			// Another attachment operation owns the files. Nothing was rendered,
+			// so keep the claim pending and the payload for a server-side retry.
+			$this->defer_busy_client_side_finalize( $attachment_id, $this->client_side_request_sub_sizes( $phase['request'] ) );
+			$this->withhold_client_side_finalize( $index, $attachment_id, 'busy' );
+			return $data;
+		}
+
+		if ( $code === 'already_watermarked' && $this->client_side_metadata_adds_files( $attachment_id, $data ) ) {
+			// The initial-apply-only guard found a flag committed under the lease;
+			// the clean layout it returned must not be registered.
+			$this->withhold_client_side_finalize( $index, $attachment_id, 'withheld' );
+			return $data;
+		}
+
+		$attempts = $claim['attempts'] + 1;
+		if ( isset( $outcome['outcome'] ) && $outcome['outcome'] === 'complete' ) {
+			$state = 'rendered';
+		} elseif ( isset( $outcome['outcome'] ) && $outcome['outcome'] === 'failed' && ! empty( $outcome['retryable'] ) && empty( $outcome['sizes']['processed'] ) && $attempts < self::CLIENT_SIDE_CLAIM_MAX_ATTEMPTS && ! $this->is_attachment_watermarked( $attachment_id ) ) {
+			// Nothing was promoted, so a retried finalize may safely try again.
+			$state = 'pending';
+		} else {
+			$state = 'terminal';
+		}
+
+		// A lost transition leaves the stored claim as another request left it;
+		// consumption below re-reads it, so nothing proceeds on this write alone.
+		$this->transition_client_side_claim( $attachment_id, $row, [
+			'state'        => $state,
+			'code'         => $code,
+			'fingerprint'  => $fingerprint,
+			'operation_id' => isset( $outcome['operation_id'] ) ? $outcome['operation_id'] : '',
+			'attempts'     => $attempts,
+		] );
+
+		return is_array( $result ) ? $result : $data;
+	}
+
+	/**
+	 * Record the finalized metadata that later callbacks hand to WordPress, so
+	 * the commit can be verified before the claim is consumed, and arm the
+	 * withheld write once every other metadata filter has run.
+	 *
+	 * @param array  $data Finalized attachment metadata.
+	 * @param int    $attachment_id Attachment ID.
+	 * @param string $context Metadata generation context.
+	 * @return array
+	 */
+	public function capture_client_side_finalize_metadata( $data, $attachment_id, $context = '' ) {
+		$phase = $this->current_client_side_phase();
+		if ( $context !== 'update' || $phase === null || $phase['phase'] !== 'finalize' || $phase['attachment_id'] !== (int) $attachment_id ) {
+			return $data;
+		}
+
+		if ( ! empty( $phase['withheld'] ) ) {
+			$this->client_side_withheld_writes[ (int) $attachment_id ] = true;
+			return $data;
+		}
+
+		$key = $this->client_side_request_key( $phase['request'] );
+		if ( isset( $this->client_side_finalize[ $key ] ) ) {
+			$fingerprint = $this->client_side_metadata_fingerprint( $data );
+			$this->client_side_finalize[ $key ]['final'] = $fingerprint === false ? '' : $fingerprint;
+		}
+
+		return $data;
+	}
+
+	/**
+	 * Skip exactly one armed finalize metadata write for an attachment whose
+	 * finalize was withheld. WordPress then keeps the unconsumed provenance rows,
+	 * so the same payload remains valid for a later retry.
+	 *
+	 * @param mixed  $check Short-circuit value.
+	 * @param int    $object_id Post ID.
+	 * @param string $meta_key Meta key.
+	 * @return mixed
+	 */
+	public function withhold_client_side_metadata_write( $check, $object_id, $meta_key ) {
+		if ( $meta_key !== '_wp_attachment_metadata' || empty( $this->client_side_withheld_writes[ (int) $object_id ] ) ) {
+			return $check;
+		}
+
+		unset( $this->client_side_withheld_writes[ (int) $object_id ] );
+		return false;
+	}
+
+	/**
+	 * Replay a finalize that was withheld because another watermark operation
+	 * held the lease. The stored payload goes through the real finalize route,
+	 * so WordPress repeats its permission, schema, and provenance checks.
+	 *
+	 * @param int $attachment_id Attachment ID.
+	 * @return array{success:bool,code:string,message:string}
+	 */
+	public function complete_client_side_upload( $attachment_id ) {
+		$attachment_id = (int) $attachment_id;
+		$payload = $this->read_client_side_payload( $attachment_id );
+		if ( $payload === false ) {
+			return $this->client_side_repair_result( false, 'client_side_nothing_to_complete', __( 'There is no deferred upload finalization to complete for this image.', 'image-watermark' ) );
+		}
+		if ( $this->is_attachment_watermarked( $attachment_id, true ) ) {
+			return $this->client_side_repair_result( false, 'client_side_already_watermarked', $this->client_side_withheld_message() );
+		}
+		$row = $this->read_client_side_claim_row( $attachment_id );
+		if ( $row === false || ( is_array( $row ) && $row['claim']['state'] !== 'pending' ) ) {
+			return $this->client_side_repair_result( false, 'client_side_claim_settled', __( 'This upload was already settled, so its deferred finalization is not replayed.', 'image-watermark' ) );
+		}
+		if ( $this->is_operation_lease_held( $attachment_id ) ) {
+			return $this->client_side_repair_result( false, 'client_side_lease_busy', __( 'Another watermark operation is still running on this image. Please retry shortly.', 'image-watermark' ) );
+		}
+
+		$request = new WP_REST_Request( 'POST', '/wp/v2/media/' . $attachment_id . '/finalize' );
+		$request->set_header( 'Content-Type', 'application/json' );
+		$request->set_body( wp_json_encode( [ 'sub_sizes' => $payload['sub_sizes'] ] ) );
+		$response = rest_do_request( $request );
+		if ( $response->is_error() ) {
+			$error = $response->as_error();
+			return $this->client_side_repair_result( false, sanitize_key( $error->get_error_code() ), $this->sanitize_operation_message( $error->get_error_message() ) );
+		}
+
+		$result = $this->client_side_repair_result( true, 'client_side_upload_completed', __( 'The deferred upload finalization completed.', 'image-watermark' ) );
+		$result['outcome'] = $this->get_attachment_operation_outcome( $attachment_id );
+		return $result;
+	}
+
+	/**
+	 * Report sideloaded files recorded for an attachment that its metadata does
+	 * not reference. Only basenames and states are exposed.
+	 *
+	 * @param int $attachment_id Attachment ID.
+	 * @return array{total:int,files:array}
+	 */
+	public function describe_client_side_orphans( $attachment_id ) {
+		$inventory = $this->inventory_client_side_orphans( (int) $attachment_id );
+		$files = [];
+		foreach ( array_slice( $inventory['files'], 0, self::CLIENT_SIDE_ORPHAN_REPORT_LIMIT ) as $entry ) {
+			$files[] = [ 'file' => $entry['file'], 'state' => $entry['state'] ];
+		}
+
+		return [ 'total' => count( $inventory['files'] ), 'files' => $files ];
+	}
+
+	/**
+	 * Remove unregistered sideloaded files that provably belong to the
+	 * attachment and that no pending finalize can still consume, together with
+	 * their provenance rows. Anything unprovable is left for manual action.
+	 *
+	 * @param int $attachment_id Attachment ID.
+	 * @return array{success:bool,code:string,message:string,removed:string[],kept:array}
+	 */
+	public function cleanup_client_side_orphans( $attachment_id ) {
+		$attachment_id = (int) $attachment_id;
+		$inventory = $this->inventory_client_side_orphans( $attachment_id );
+		if ( empty( $inventory['files'] ) ) {
+			return $this->client_side_repair_result( true, 'client_side_no_orphans', __( 'No unregistered sideloaded files were found.', 'image-watermark' ) );
+		}
+		if ( $inventory['in_flight'] ) {
+			return $this->client_side_repair_result( false, 'client_side_upload_in_progress', __( 'This upload may still be finalizing. Try again after it completes, or after one hour.', 'image-watermark' ) );
+		}
+
+		$token = $this->operation_token();
+		$lock = $this->acquire_operation_lock( $attachment_id, $token );
+		if ( $lock === false ) {
+			return $this->client_side_repair_result( false, 'client_side_lease_busy', __( 'Another watermark operation is still running on this image. Please retry shortly.', 'image-watermark' ) );
+		}
+
+		$removed = [];
+		$kept = [];
+		try {
+			// Re-inventory under the lease so the decision matches what is deleted.
+			$inventory = $this->inventory_client_side_orphans( $attachment_id );
+			if ( $inventory['in_flight'] ) {
+				return $this->client_side_repair_result( false, 'client_side_upload_in_progress', __( 'This upload may still be finalizing. Try again after it completes, or after one hour.', 'image-watermark' ) );
+			}
+			foreach ( $inventory['files'] as $entry ) {
+				if ( $entry['state'] === 'removable' ) {
+					// phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink -- Deletes one contained, unreferenced, attachment-owned file while holding the attachment lease.
+					@unlink( $entry['path'] );
+					clearstatcache( true, $entry['path'] );
+					if ( file_exists( $entry['path'] ) ) {
+						$kept[] = [ 'file' => $entry['file'], 'state' => 'manual' ];
+						continue;
+					}
+				} elseif ( $entry['state'] !== 'missing' ) {
+					$kept[] = [ 'file' => $entry['file'], 'state' => $entry['state'] ];
+					continue;
+				}
+				delete_post_meta( $attachment_id, self::CLIENT_SIDE_PROVENANCE_META_KEY, wp_slash( $entry['name'] ) );
+				$removed[] = $entry['file'];
+			}
+			if ( $this->is_attachment_watermarked( $attachment_id ) ) {
+				// A deferred payload can never register on a watermarked attachment.
+				delete_post_meta( $attachment_id, self::CLIENT_SIDE_PAYLOAD_META_KEY );
+			}
+		} finally {
+			$this->release_operation_lock( [ 'attachment_id' => $attachment_id, 'token' => $token, 'lock' => $lock ] );
+		}
+
+		$result = $this->client_side_repair_result( true, 'client_side_orphans_removed', __( 'Unregistered sideloaded files were removed. Files that could not be proven to belong to this image were left for manual review.', 'image-watermark' ) );
+		$result['removed'] = $removed;
+		$result['kept'] = $kept;
+		return $result;
+	}
+
+	/**
+	 * Remove aged rendered or terminal claims whose commit could not be
+	 * verified. Protection is flag-based, so removal never reopens a
+	 * watermarked attachment to clean derivatives. Pending claims are kept
+	 * because they carry the incomplete-upload diagnostic.
+	 *
+	 * @return int Number of claims removed.
+	 */
+	public function sweep_client_side_claims() {
+		global $wpdb;
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery -- Bounded scan of one private meta key; each removal below is an exact-row delete.
+		$rows = $wpdb->get_results( $wpdb->prepare(
+			"SELECT meta_id, post_id, meta_value FROM {$wpdb->postmeta} WHERE meta_key = %s AND meta_value NOT LIKE %s ORDER BY meta_id ASC LIMIT %d",
+			self::CLIENT_SIDE_CLAIM_META_KEY,
+			'%' . $wpdb->esc_like( 's:5:"state";s:7:"pending";' ) . '%',
+			self::CLIENT_SIDE_SWEEP_LIMIT
+		), ARRAY_A );
+
+		$removed = 0;
+		foreach ( (array) $rows as $row ) {
+			$attachment_id = (int) $row['post_id'];
+			$claim = is_serialized( $row['meta_value'] ) ? maybe_unserialize( $row['meta_value'] ) : null;
+			if ( ! $this->is_valid_client_side_claim( $claim, $attachment_id ) || $claim['state'] === 'pending' || $claim['updated_at'] + self::CLIENT_SIDE_CLAIM_TTL >= time() ) {
+				continue;
+			}
+			$current = $this->read_client_side_claim_row( $attachment_id );
+			if ( ! is_array( $current ) || $current['meta_id'] !== (int) $row['meta_id'] || $current['raw'] !== $row['meta_value'] ) {
+				continue;
+			}
+			if ( $this->delete_client_side_claim( $attachment_id, $current ) ) {
+				delete_post_meta( $attachment_id, self::CLIENT_SIDE_PAYLOAD_META_KEY );
+				$removed++;
+			}
+		}
+
+		return $removed;
+	}
+
+	/**
+	 * @param array           $handler Matched route handler.
+	 * @param WP_REST_Request $request Request.
+	 * @return array|null
+	 */
+	private function recognize_client_side_media_phase( $handler, $request ) {
+		if ( ! $request instanceof WP_REST_Request || ! class_exists( 'WP_REST_Attachments_Controller', false ) || strtoupper( $request->get_method() ) !== 'POST' || ! is_array( $handler ) || empty( $handler['callback'] ) || ! is_array( $handler['callback'] ) || count( $handler['callback'] ) !== 2 ) {
+			return null;
+		}
+
+		list( $controller, $method ) = array_values( $handler['callback'] );
+		if ( ! $controller instanceof WP_REST_Attachments_Controller || ! is_string( $method ) ) {
+			return null;
+		}
+
+		$route = $request->get_route();
+		if ( $method === 'create_item' && $route === '/wp/v2/media' && false === $request['generate_sub_sizes'] && $this->client_side_finalize_route_exists() ) {
+			return [ 'phase' => 'create', 'attachment_id' => 0, 'request' => $request ];
+		}
+
+		if ( ( $method === 'sideload_item' || $method === 'finalize_item' ) && preg_match( '#^/wp/v2/media/([1-9][0-9]*)/(sideload|finalize)$#', $route, $matches ) && $matches[2] . '_item' === $method && (int) $matches[1] === (int) $request['id'] ) {
+			return [ 'phase' => $matches[2], 'attachment_id' => (int) $matches[1], 'request' => $request ];
+		}
+
+		return null;
+	}
+
+	/**
+	 * A create request only defers its watermark when WordPress can finalize it.
+	 *
+	 * @return bool
+	 */
+	private function client_side_finalize_route_exists() {
+		$routes = rest_get_server()->get_routes( 'wp/v2' );
+		return isset( $routes['/wp/v2/media/(?P<id>[\d]+)/finalize'] );
+	}
+
+	/** @return array|null */
+	private function current_client_side_phase() {
+		return empty( $this->client_side_phases ) ? null : $this->client_side_phases[ count( $this->client_side_phases ) - 1 ];
+	}
+
+	/** @return int|false Index of the phase opened for this exact request. */
+	private function client_side_phase_index( $request ) {
+		$index = false;
+		foreach ( $this->client_side_phases as $candidate_index => $candidate ) {
+			if ( $candidate['request'] === $request ) {
+				$index = $candidate_index;
+			}
+		}
+
+		return $index;
+	}
+
+	/** @return string */
+	private function client_side_request_key( $request ) {
+		return is_object( $request ) ? spl_object_hash( $request ) : '';
+	}
+
+	/** @return void */
+	private function begin_client_side_finalize_pass( $phase, $fingerprint ) {
+		$key = $this->client_side_request_key( $phase['request'] );
+		$this->client_side_finalize[ $key ] = [
+			'attachment_id' => (int) $phase['attachment_id'],
+			'input'         => $fingerprint,
+			'final'         => '',
+		];
+	}
+
+	/**
+	 * @param array $file Upload result.
+	 * @param bool  $is_admin Whether this upload uses admin rules.
+	 * @return void
+	 */
+	private function register_client_side_candidate( $file, $is_admin, $request ) {
+		$identity = empty( $file['file'] ) || ! is_string( $file['file'] ) ? false : $this->operation_path_identity( $file['file'], wp_upload_dir() );
+		if ( $identity === false ) {
+			return;
+		}
+
+		$this->client_side_candidates[] = [
+			'file'     => $identity['path'],
+			'is_admin' => (bool) $is_admin,
+			'request'  => $request,
+		];
+	}
+
+	/**
+	 * The finalized main file must be the attached file, and the attached file
+	 * must be the claimed upload or a replacement recorded during sideload.
+	 *
+	 * @param array $claim Valid claim.
+	 * @param int   $attachment_id Attachment ID.
+	 * @param array $data Finalized attachment metadata.
+	 * @return bool
+	 */
+	private function client_side_claim_owns_metadata( $claim, $attachment_id, $data ) {
+		$attached = get_post_meta( $attachment_id, '_wp_attached_file', true );
+		if ( ! is_string( $attached ) || $attached === '' || ! is_array( $data ) || empty( $data['file'] ) || ! is_string( $data['file'] ) ) {
+			return false;
+		}
+
+		$attached = wp_normalize_path( $attached );
+		if ( ! $this->paths_match( wp_normalize_path( $data['file'] ), $attached ) ) {
+			return false;
+		}
+		foreach ( $claim['files'] as $file ) {
+			if ( $this->paths_match( $file, $attached ) ) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * Extend a pending claim's ownership chain when a 'scaled' or 'original'
+	 * sideload replaced the claimed attached file. WordPress names these files
+	 * with numeric suffixes (for example "photo-rotated-1.jpg"), so ownership is
+	 * tracked from the observed replacement rather than inferred from names.
+	 *
+	 * @param array $phase Closed sideload phase.
+	 * @param mixed $response Callback response.
+	 * @return void
+	 */
+	private function track_client_side_replacement( $phase, $response ) {
+		if ( is_wp_error( $response ) || ( $response instanceof WP_HTTP_Response && $response->get_status() >= 400 ) || ! isset( $phase['attached_before'] ) || ! is_string( $phase['attached_before'] ) || $phase['attached_before'] === '' ) {
+			return;
+		}
+
+		$attachment_id = $phase['attachment_id'];
+		$before = wp_normalize_path( $phase['attached_before'] );
+		$after = get_post_meta( $attachment_id, '_wp_attached_file', true );
+		if ( ! is_string( $after ) || ! $this->is_valid_client_side_relative_path( wp_normalize_path( $after ) ) ) {
+			return;
+		}
+		$after = wp_normalize_path( $after );
+		if ( $this->paths_match( $before, $after ) || dirname( $before ) !== dirname( $after ) ) {
+			return;
+		}
+
+		// Concurrent sideloads may race on the claim; retry the exact transition.
+		for ( $attempt = 0; $attempt < 3; $attempt++ ) {
+			$row = $this->read_client_side_claim_row( $attachment_id );
+			if ( ! is_array( $row ) || $row['claim']['state'] !== 'pending' || count( $row['claim']['files'] ) >= 8 ) {
+				return;
+			}
+			$owns_before = false;
+			foreach ( $row['claim']['files'] as $file ) {
+				if ( $this->paths_match( $file, $after ) ) {
+					return;
+				}
+				$owns_before = $owns_before || $this->paths_match( $file, $before );
+			}
+			if ( ! $owns_before || $this->transition_client_side_claim( $attachment_id, $row, [ 'files' => array_merge( $row['claim']['files'], [ $after ] ) ] ) ) {
+				return;
+			}
+		}
+	}
+
+	/** @return bool */
+	private function is_valid_client_side_relative_path( $path ) {
+		return is_string( $path ) && $path !== '' && strlen( $path ) <= 1024 && strpos( $path, "\0" ) === false && strpos( $path, '..' ) === false && strpos( $path, ':' ) === false && strpos( $path, '/' ) !== 0;
+	}
+
+	/** @return bool */
+	private function is_valid_client_side_claim( $claim, $attachment_id ) {
+		if ( ! is_array( $claim ) || strlen( maybe_serialize( $claim ) ) > 4096 ) {
+			return false;
+		}
+
+		foreach ( [ 'version', 'attachment_id', 'attempts', 'created_at', 'updated_at' ] as $key ) {
+			if ( ! isset( $claim[ $key ] ) || ! is_int( $claim[ $key ] ) ) {
+				return false;
+			}
+		}
+		foreach ( [ 'file', 'state', 'code', 'fingerprint', 'operation_id' ] as $key ) {
+			if ( ! isset( $claim[ $key ] ) || ! is_string( $claim[ $key ] ) ) {
+				return false;
+			}
+		}
+		if ( ! isset( $claim['files'] ) || ! is_array( $claim['files'] ) || array_values( $claim['files'] ) !== $claim['files'] || count( $claim['files'] ) < 1 || count( $claim['files'] ) > 8 || $claim['files'][0] !== $claim['file'] ) {
+			return false;
+		}
+		foreach ( $claim['files'] as $file ) {
+			if ( ! $this->is_valid_client_side_relative_path( $file ) ) {
+				return false;
+			}
+		}
+
+		return $claim['version'] === self::CLIENT_SIDE_CLAIM_VERSION
+			&& $claim['attachment_id'] === (int) $attachment_id
+			&& $claim['attachment_id'] > 0
+			&& isset( $claim['is_admin'] ) && is_bool( $claim['is_admin'] )
+			&& in_array( $claim['state'], [ 'pending', 'rendered', 'terminal' ], true )
+			&& ( $claim['fingerprint'] === '' || preg_match( '/^[a-f0-9]{64}$/', $claim['fingerprint'] ) )
+			&& preg_match( '/^[A-Za-z0-9]{0,64}$/', $claim['operation_id'] )
+			&& preg_match( '/^[a-z0-9_\-]{0,64}$/', $claim['code'] )
+			&& $claim['attempts'] >= 0 && $claim['attempts'] <= self::CLIENT_SIDE_CLAIM_MAX_ATTEMPTS
+			&& $claim['created_at'] > 0;
+	}
+
+	/**
+	 * Read the attachment's single claim row directly from the database, so a
+	 * transition compares against the exact stored row and value rather than a
+	 * cached or filtered copy. Duplicate rows or an invalid value fail closed.
+	 *
+	 * @param int $attachment_id Attachment ID.
+	 * @return array{meta_id:int,raw:string,claim:array}|false|null Null when there is no claim.
+	 */
+	private function read_client_side_claim_row( $attachment_id ) {
+		global $wpdb;
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery -- Exact-row read for the claim compare-and-swap; the cache may be stale across requests.
+		$rows = $wpdb->get_results( $wpdb->prepare(
+			"SELECT meta_id, meta_value FROM {$wpdb->postmeta} WHERE post_id = %d AND meta_key = %s ORDER BY meta_id ASC LIMIT 2",
+			(int) $attachment_id,
+			self::CLIENT_SIDE_CLAIM_META_KEY
+		), ARRAY_A );
+		if ( $wpdb->last_error !== '' ) {
+			return false;
+		}
+
+		if ( empty( $rows ) ) {
+			return null;
+		}
+		if ( count( $rows ) !== 1 || ! is_serialized( $rows[0]['meta_value'] ) ) {
+			return false;
+		}
+		$claim = maybe_unserialize( $rows[0]['meta_value'] );
+		if ( ! $this->is_valid_client_side_claim( $claim, $attachment_id ) ) {
+			return false;
+		}
+
+		return [ 'meta_id' => (int) $rows[0]['meta_id'], 'raw' => $rows[0]['meta_value'], 'claim' => $claim ];
+	}
+
+	/**
+	 * Write a claim transition only to the exact row and value this request
+	 * read. Unlike update_post_meta() with a previous value, a row that was
+	 * deleted or changed in the meantime is never recreated or overwritten.
+	 *
+	 * @param int   $attachment_id Attachment ID.
+	 * @param array $row Row returned by read_client_side_claim_row().
+	 * @param array $changes Changed fields.
+	 * @return array|false The new row, or false when the transition was lost.
+	 */
+	private function transition_client_side_claim( $attachment_id, $row, $changes ) {
+		$claim = $row['claim'];
+		$changes['code'] = isset( $changes['code'] ) ? substr( sanitize_key( $changes['code'] ), 0, 64 ) : $claim['code'];
+		$changes['operation_id'] = isset( $changes['operation_id'] ) && is_string( $changes['operation_id'] ) && preg_match( '/^[A-Za-z0-9]{1,64}$/', $changes['operation_id'] ) ? $changes['operation_id'] : $claim['operation_id'];
+		$changes['updated_at'] = time();
+		$next = array_merge( $claim, $changes );
+		if ( ! $this->is_valid_client_side_claim( $next, $attachment_id ) ) {
+			return false;
+		}
+
+		$raw = maybe_serialize( $next );
+		if ( $raw === $row['raw'] ) {
+			return $row;
+		}
+		if ( $this->should_inject_operation_fault( 'client_side_claim_before_write', [ 'attachment_id' => (int) $attachment_id ] ) ) {
+			return false;
+		}
+
+		global $wpdb;
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery -- Exact-row compare-and-swap; core meta APIs recreate a deleted row.
+		$updated = $wpdb->query( $wpdb->prepare(
+			"UPDATE {$wpdb->postmeta} SET meta_value = %s WHERE meta_id = %d AND post_id = %d AND meta_key = %s AND BINARY meta_value = %s",
+			$raw,
+			$row['meta_id'],
+			(int) $attachment_id,
+			self::CLIENT_SIDE_CLAIM_META_KEY,
+			$row['raw']
+		) );
+		wp_cache_delete( (int) $attachment_id, 'post_meta' );
+
+		return $updated === 1 ? [ 'meta_id' => $row['meta_id'], 'raw' => $raw, 'claim' => $next ] : false;
+	}
+
+	/**
+	 * Delete exactly the claim row and value this request read.
+	 *
+	 * @param int   $attachment_id Attachment ID.
+	 * @param array $row Row returned by read_client_side_claim_row().
+	 * @return bool
+	 */
+	private function delete_client_side_claim( $attachment_id, $row ) {
+		global $wpdb;
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery -- Exact-row compare-and-delete for the private claim.
+		$deleted = $wpdb->query( $wpdb->prepare(
+			"DELETE FROM {$wpdb->postmeta} WHERE meta_id = %d AND post_id = %d AND meta_key = %s AND BINARY meta_value = %s",
+			$row['meta_id'],
+			(int) $attachment_id,
+			self::CLIENT_SIDE_CLAIM_META_KEY,
+			$row['raw']
+		) );
+		wp_cache_delete( (int) $attachment_id, 'post_meta' );
+
+		return $deleted === 1;
+	}
+
+	/**
+	 * Bounded fingerprint of the finalized file layout: main file, original
+	 * image, and the file registered for every size.
+	 *
+	 * @param mixed $data Attachment metadata.
+	 * @return string|false
+	 */
+	private function client_side_metadata_fingerprint( $data ) {
+		if ( ! is_array( $data ) || empty( $data['file'] ) || ! is_string( $data['file'] ) ) {
+			return false;
+		}
+
+		$sizes = [];
+		if ( ! empty( $data['sizes'] ) && is_array( $data['sizes'] ) ) {
+			foreach ( $data['sizes'] as $name => $size ) {
+				$sizes[ (string) $name ] = is_array( $size ) && isset( $size['file'] ) && is_string( $size['file'] ) ? $size['file'] : '';
+			}
+			ksort( $sizes, SORT_STRING );
+		}
+
+		return hash( 'sha256', maybe_serialize( [
+			'file'           => $data['file'],
+			'original_image' => isset( $data['original_image'] ) && is_string( $data['original_image'] ) ? $data['original_image'] : '',
+			'sizes'          => $sizes,
+		] ) );
+	}
+
+	/**
+	 * Consume a rendered or terminal claim, and any deferred payload, only
+	 * after WordPress persisted the finalized metadata this request produced.
+	 * A pending claim or an unverified commit keeps the claim for a retry. A
+	 * finalize WordPress rejected after authorization is recorded on the claim
+	 * so diagnostics do not report an unfinished browser upload.
+	 *
+	 * @param array $phase Closed finalize phase.
+	 * @param mixed $response Callback response.
+	 * @return void
+	 */
+	private function complete_client_side_finalize( $phase, $response ) {
+		$attachment_id = (int) $phase['attachment_id'];
+		if ( is_wp_error( $response ) || ( $response instanceof WP_HTTP_Response && $response->get_status() >= 400 ) ) {
+			$row = ! empty( $phase['dispatched'] ) ? $this->read_client_side_claim_row( $attachment_id ) : null;
+			if ( is_array( $row ) && $row['claim']['state'] === 'pending' && $row['claim']['code'] === '' ) {
+				$this->transition_client_side_claim( $attachment_id, $row, [ 'code' => 'finalize_rejected' ] );
+			}
+			return;
+		}
+
+		$key = $this->client_side_request_key( $phase['request'] );
+		$pass = isset( $this->client_side_finalize[ $key ] ) ? $this->client_side_finalize[ $key ] : null;
+		if ( ! is_array( $pass ) || $pass['attachment_id'] !== $attachment_id || $pass['final'] === '' || $this->client_side_metadata_fingerprint( wp_get_attachment_metadata( $attachment_id, true ) ) !== $pass['final'] ) {
+			return;
+		}
+
+		delete_post_meta( $attachment_id, self::CLIENT_SIDE_PAYLOAD_META_KEY );
+		$row = $this->read_client_side_claim_row( $attachment_id );
+		if ( is_array( $row ) && $row['claim']['state'] !== 'pending' ) {
+			$this->delete_client_side_claim( $attachment_id, $row );
+		}
+	}
+
+	/**
+	 * Mark the current finalize as withheld. Its metadata write is skipped by
+	 * withhold_client_side_metadata_write() and its response replaced by a 409.
+	 *
+	 * @param int|false $index Phase index.
+	 * @param int       $attachment_id Attachment ID.
+	 * @param string    $reason 'withheld' or 'busy'.
+	 * @return void
+	 */
+	private function withhold_client_side_finalize( $index, $attachment_id, $reason ) {
+		if ( $index === false ) {
+			return;
+		}
+
+		if ( $reason === 'busy' ) {
+			$this->client_side_phases[ $index ]['withheld'] = [ 'code' => 'iw_client_side_finalize_busy', 'message' => $this->client_side_busy_message(), 'retryable' => true ];
+			return;
+		}
+
+		$this->settle_withheld_client_side_finalize( $attachment_id );
+		$this->client_side_phases[ $index ]['withheld'] = [ 'code' => 'iw_client_side_finalize_withheld', 'message' => $this->client_side_withheld_message(), 'retryable' => false ];
+	}
+
+	/**
+	 * @param int|false $index Phase index.
+	 * @return WP_Error
+	 */
+	private function refuse_client_side_request( $index, $code, $message, $retryable ) {
+		$this->client_side_phases[ $index ]['withheld'] = [ 'code' => $code, 'message' => $message, 'retryable' => (bool) $retryable ];
+		return new WP_Error( $code, $message, [ 'status' => 409, 'retryable' => (bool) $retryable ] );
+	}
+
+	/**
+	 * A finalize for a watermarked attachment can never register its new files.
+	 * Settle a pending claim and keep the reason visible.
+	 *
+	 * @param int $attachment_id Attachment ID.
+	 * @return void
+	 */
+	private function settle_withheld_client_side_finalize( $attachment_id ) {
+		$row = $this->read_client_side_claim_row( $attachment_id );
+		if ( is_array( $row ) && $row['claim']['state'] === 'pending' ) {
+			$this->transition_client_side_claim( $attachment_id, $row, [ 'state' => 'terminal', 'code' => 'finalize_withheld' ] );
+		}
+		delete_post_meta( $attachment_id, self::CLIENT_SIDE_PAYLOAD_META_KEY );
+		$this->record_client_side_outcome( $attachment_id, 'client_side_finalize_withheld', $this->client_side_withheld_message() );
+	}
+
+	/**
+	 * Keep a busy finalize retryable: store its payload and mark a pending claim.
+	 *
+	 * @param int   $attachment_id Attachment ID.
+	 * @param array $sub_sizes Finalize sub-size entries.
+	 * @return void
+	 */
+	private function defer_busy_client_side_finalize( $attachment_id, $sub_sizes ) {
+		$payload = $this->sanitize_client_side_payload( [ 'version' => 1, 'stored_at' => time(), 'sub_sizes' => $sub_sizes ] );
+		if ( $payload !== false ) {
+			update_post_meta( $attachment_id, self::CLIENT_SIDE_PAYLOAD_META_KEY, wp_slash( $payload ) );
+		}
+
+		$row = $this->read_client_side_claim_row( $attachment_id );
+		if ( is_array( $row ) && $row['claim']['state'] === 'pending' ) {
+			$this->transition_client_side_claim( $attachment_id, $row, [ 'code' => 'busy' ] );
+		}
+	}
+
+	/**
+	 * After a completed manual or bulk apply/remove, record that choice on a
+	 * pending claim so a late finalize neither renders nor reports the upload
+	 * as unfinished.
+	 *
+	 * @param int    $attachment_id Attachment ID.
+	 * @param string $context Operation context.
+	 * @return void
+	 */
+	private function settle_client_side_claim_after_manual( $attachment_id, $context ) {
+		$row = $this->read_client_side_claim_row( $attachment_id );
+		// The latest manual choice wins over an earlier one; other terminal
+		// dispositions and rendered claims are left as they are.
+		if ( is_array( $row ) && ( $row['claim']['state'] === 'pending' || ( $row['claim']['state'] === 'terminal' && in_array( $row['claim']['code'], [ 'manual_apply', 'manual_remove' ], true ) ) ) ) {
+			$this->transition_client_side_claim( $attachment_id, $row, [ 'state' => 'terminal', 'code' => $context === 'manual-remove' ? 'manual_remove' : 'manual_apply' ] );
+		}
+		// The manual choice supersedes the deferred finalize.
+		delete_post_meta( $attachment_id, self::CLIENT_SIDE_PAYLOAD_META_KEY );
+	}
+
+	/**
+	 * Persist a client-side terminal skip through the operation journal so its
+	 * reason and next action survive claim cleanup.
+	 *
+	 * @return void
+	 */
+	private function record_client_side_outcome( $attachment_id, $code, $message ) {
+		$this->persist_terminal_outcome( (int) $attachment_id, 'apply', 'auto-apply', 'skipped', $code, $message, 'skipped' );
+	}
+
+	/**
+	 * A 'scaled' or 'original' sideload points _wp_attached_file at a new main
+	 * file before finalize updates the metadata. Until finalize commits, the
+	 * backup key (metadata file) and the render target (attached file) differ,
+	 * so no operation may run against the attachment.
+	 *
+	 * @param int   $attachment_id Attachment ID.
+	 * @param array $data Attachment metadata.
+	 * @return bool
+	 */
+	private function is_unfinalized_client_side_replacement( $attachment_id, $data ) {
+		$attached = get_post_meta( $attachment_id, '_wp_attached_file', true );
+		if ( ! is_string( $attached ) || $attached === '' || ! is_array( $data ) || empty( $data['file'] ) || ! is_string( $data['file'] ) || wp_normalize_path( $attached ) === wp_normalize_path( $data['file'] ) ) {
+			return false;
+		}
+
+		return $this->read_client_side_claim_row( $attachment_id ) !== null || get_post_meta( $attachment_id, self::CLIENT_SIDE_PROVENANCE_META_KEY ) !== [] || get_post_meta( $attachment_id, self::CLIENT_SIDE_PAYLOAD_META_KEY ) !== [];
+	}
+
+	/** @return string */
+	private function client_side_unfinalized_message() {
+		return __( 'This upload was not finalized: the editor replaced its main file, but the image metadata was never updated. Complete the deferred upload if one is available, or re-upload the image.', 'image-watermark' );
+	}
+
+	/** @return string */
+	private function client_side_withheld_message() {
+		return __( 'New image sizes from this upload were not registered because the image was already watermarked before the upload finished. Apply the watermark again to regenerate every size, or re-upload the image.', 'image-watermark' );
+	}
+
+	/** @return string */
+	private function client_side_busy_message() {
+		return __( 'Another watermark operation was running, so this upload was not finalized. Its image sizes were kept and the upload can be completed once that operation finishes.', 'image-watermark' );
+	}
+
+	/** @return array */
+	private function client_side_repair_result( $success, $code, $message ) {
+		return [ 'success' => (bool) $success, 'code' => $code, 'message' => $message, 'removed' => [], 'kept' => [] ];
+	}
+
+	/**
+	 * @param int  $attachment_id Attachment ID.
+	 * @param bool $fresh Whether to bypass this request's post-meta cache.
+	 * @return bool
+	 */
+	private function is_attachment_watermarked( $attachment_id, $fresh = false ) {
+		if ( $fresh ) {
+			wp_cache_delete( (int) $attachment_id, 'post_meta' );
+		}
+
+		return (int) get_post_meta( (int) $attachment_id, $this->plugin->get_watermarked_meta_key(), true ) === 1;
+	}
+
+	/**
+	 * Advisory check for a live attachment lease or deletion fence. The lease
+	 * taken inside apply_watermark() remains authoritative.
+	 *
+	 * @param int $attachment_id Attachment ID.
+	 * @return bool
+	 */
+	private function is_operation_lease_held( $attachment_id ) {
+		global $wpdb;
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery -- Uncached read of the lease written by another request.
+		$raw = $wpdb->get_var( $wpdb->prepare( "SELECT option_value FROM {$wpdb->options} WHERE option_name = %s", $this->operation_lock_name( $attachment_id ) ) );
+		if ( $raw === null ) {
+			return false;
+		}
+		$lock = maybe_unserialize( $raw );
+
+		return ! is_array( $lock ) || empty( $lock['heartbeat_at'] ) || ! empty( $lock['deleting'] ) || (int) $lock['heartbeat_at'] > time() - 900;
+	}
+
+	/** @return array */
+	private function client_side_request_sub_sizes( $request ) {
+		$sub_sizes = $request instanceof WP_REST_Request ? $request['sub_sizes'] : [];
+		return is_array( $sub_sizes ) ? $sub_sizes : [];
+	}
+
+	/** @return string[] File names a finalize payload would register. */
+	private function client_side_sub_size_files( $sub_sizes ) {
+		$files = [];
+		foreach ( (array) $sub_sizes as $sub_size ) {
+			foreach ( [ 'file', 'original_image' ] as $key ) {
+				if ( is_array( $sub_size ) && isset( $sub_size[ $key ] ) && is_string( $sub_size[ $key ] ) && $sub_size[ $key ] !== '' ) {
+					$files[] = $sub_size[ $key ];
+				}
+			}
+		}
+
+		return $files;
+	}
+
+	/** @return string[] File names attachment metadata references. */
+	private function client_side_metadata_files( $metadata ) {
+		if ( ! is_array( $metadata ) ) {
+			return [];
+		}
+
+		$files = [];
+		foreach ( [ 'file', 'original_image', 'source_image', 'animated_video', 'animated_video_poster' ] as $key ) {
+			if ( isset( $metadata[ $key ] ) && is_string( $metadata[ $key ] ) && $metadata[ $key ] !== '' ) {
+				$files[] = $metadata[ $key ];
+			}
+		}
+		if ( ! empty( $metadata['sizes'] ) && is_array( $metadata['sizes'] ) ) {
+			foreach ( $metadata['sizes'] as $size ) {
+				if ( is_array( $size ) && isset( $size['file'] ) && is_string( $size['file'] ) && $size['file'] !== '' ) {
+					$files[] = $size['file'];
+				}
+			}
+		}
+
+		return $files;
+	}
+
+	/**
+	 * Names the attachment's stored metadata and attached file already
+	 * reference, in both their stored and basename forms.
+	 *
+	 * @param int $attachment_id Attachment ID.
+	 * @return array<string,bool>
+	 */
+	private function client_side_referenced_names( $attachment_id, $metadata = null ) {
+		$names = $this->client_side_metadata_files( $metadata === null ? wp_get_attachment_metadata( $attachment_id, true ) : $metadata );
+		$attached = get_post_meta( $attachment_id, '_wp_attached_file', true );
+		if ( is_string( $attached ) && $attached !== '' ) {
+			$names[] = $attached;
+		}
+
+		$referenced = [];
+		foreach ( $names as $name ) {
+			$referenced[ wp_normalize_path( $name ) ] = true;
+			$referenced[ wp_basename( $name ) ] = true;
+		}
+
+		return $referenced;
+	}
+
+	/** @return bool Whether any name is not yet referenced by stored metadata. */
+	private function client_side_names_add_files( $attachment_id, $names ) {
+		$referenced = $this->client_side_referenced_names( $attachment_id );
+		foreach ( $names as $name ) {
+			if ( ! isset( $referenced[ wp_normalize_path( $name ) ] ) && ! isset( $referenced[ wp_basename( $name ) ] ) ) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/** @return bool */
+	private function client_side_metadata_adds_files( $attachment_id, $metadata ) {
+		return $this->client_side_names_add_files( $attachment_id, $this->client_side_metadata_files( $metadata ) );
+	}
+
+	/**
+	 * Bound and type-check a finalize payload before storing or replaying it.
+	 * WordPress repeats its own schema and provenance validation on replay.
+	 *
+	 * @param mixed $payload Payload.
+	 * @return array|false
+	 */
+	private function sanitize_client_side_payload( $payload ) {
+		if ( ! is_array( $payload ) || ! isset( $payload['version'], $payload['stored_at'], $payload['sub_sizes'] ) || (int) $payload['version'] !== 1 || ! is_array( $payload['sub_sizes'] ) || count( $payload['sub_sizes'] ) > 100 ) {
+			return false;
+		}
+
+		$sub_sizes = [];
+		foreach ( $payload['sub_sizes'] as $sub_size ) {
+			if ( ! is_array( $sub_size ) || ! isset( $sub_size['image_size'] ) ) {
+				return false;
+			}
+			$entry = [];
+			$image_size = $sub_size['image_size'];
+			if ( is_array( $image_size ) ) {
+				if ( count( $image_size ) > 64 ) {
+					return false;
+				}
+				foreach ( $image_size as $name ) {
+					if ( ! is_string( $name ) || strlen( $name ) > 255 ) {
+						return false;
+					}
+				}
+				$entry['image_size'] = array_values( $image_size );
+			} elseif ( is_string( $image_size ) && strlen( $image_size ) <= 255 ) {
+				$entry['image_size'] = $image_size;
+			} else {
+				return false;
+			}
+			foreach ( [ 'file', 'original_image', 'mime_type' ] as $key ) {
+				if ( isset( $sub_size[ $key ] ) ) {
+					if ( ! is_string( $sub_size[ $key ] ) || strlen( $sub_size[ $key ] ) > 1024 ) {
+						return false;
+					}
+					$entry[ $key ] = $sub_size[ $key ];
+				}
+			}
+			foreach ( [ 'width', 'height', 'filesize' ] as $key ) {
+				if ( isset( $sub_size[ $key ] ) ) {
+					if ( ! is_int( $sub_size[ $key ] ) || $sub_size[ $key ] < 0 ) {
+						return false;
+					}
+					$entry[ $key ] = $sub_size[ $key ];
+				}
+			}
+			$sub_sizes[] = $entry;
+		}
+
+		$clean = [ 'version' => 1, 'stored_at' => (int) $payload['stored_at'], 'sub_sizes' => $sub_sizes ];
+		return strlen( maybe_serialize( $clean ) ) <= 65536 ? $clean : false;
+	}
+
+	/** @return array|false */
+	private function read_client_side_payload( $attachment_id ) {
+		$rows = get_post_meta( (int) $attachment_id, self::CLIENT_SIDE_PAYLOAD_META_KEY );
+		return is_array( $rows ) && count( $rows ) === 1 ? $this->sanitize_client_side_payload( $rows[0] ) : false;
+	}
+
+	/** @return bool|null Whether any deferred payload row exists, or null on a read error. */
+	private function client_side_payload_row_exists( $attachment_id ) {
+		global $wpdb;
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery -- Cleanup must distinguish an absent payload from a failed read.
+		$meta_id = $wpdb->get_var( $wpdb->prepare(
+			"SELECT meta_id FROM {$wpdb->postmeta} WHERE post_id = %d AND meta_key = %s LIMIT 1",
+			(int) $attachment_id,
+			self::CLIENT_SIDE_PAYLOAD_META_KEY
+		) );
+		return $wpdb->last_error !== '' ? null : $meta_id !== null;
+	}
+
+	/**
+	 * Classify every recorded sideloaded file the attachment's metadata does not
+	 * reference. States: awaiting_finalize (a finalize may still consume it),
+	 * removable (provably owned and unreferenced), missing (row without a file),
+	 * and manual (ownership or containment cannot be proven).
+	 *
+	 * @param int  $attachment_id Attachment ID.
+	 * @param bool $deleting Whether the attachment itself is being deleted.
+	 * @return array{in_flight:bool,files:array}
+	 */
+	private function inventory_client_side_orphans( $attachment_id, $deleting = false ) {
+		$inventory = [ 'in_flight' => false, 'files' => [] ];
+		$names = [];
+		foreach ( (array) get_post_meta( $attachment_id, self::CLIENT_SIDE_PROVENANCE_META_KEY ) as $name ) {
+			if ( is_string( $name ) && $name !== '' && ! in_array( $name, $names, true ) ) {
+				$names[] = $name;
+			}
+		}
+		if ( empty( $names ) ) {
+			return $inventory;
+		}
+
+		$metadata = wp_get_attachment_metadata( $attachment_id, true );
+		$metadata_valid = is_array( $metadata ) && ! empty( $metadata['file'] ) && is_string( $metadata['file'] );
+		$metadata_raw = $metadata_valid ? maybe_serialize( $metadata ) : '';
+		$referenced = $metadata_valid ? $this->client_side_referenced_names( $attachment_id, $metadata ) : [];
+		$row = $this->read_client_side_claim_row( $attachment_id );
+		$payload_row = $this->client_side_payload_row_exists( $attachment_id );
+		$payload_valid = $payload_row === true && $this->read_client_side_payload( $attachment_id ) !== false;
+		$ownership_uncertain = ! $metadata_valid || $row === false || $payload_row === null || ( $payload_row === true && ! $payload_valid );
+		$attached = get_post_meta( $attachment_id, '_wp_attached_file', true );
+		$upload_dir = wp_upload_dir();
+		$directory = false;
+		$relative_dir = '';
+		if ( is_string( $attached ) && $this->is_valid_client_side_relative_path( wp_normalize_path( $attached ) ) && empty( $upload_dir['error'] ) ) {
+			$relative_dir = dirname( wp_normalize_path( $attached ) );
+			$relative_dir = $relative_dir === '.' ? '' : $relative_dir;
+			$base = realpath( $upload_dir['basedir'] );
+			$directory = realpath( $upload_dir['basedir'] . ( $relative_dir === '' ? '' : '/' . $relative_dir ) );
+			if ( $base === false || $directory === false || ! $this->operation_path_is_within_root( wp_normalize_path( $directory ), wp_normalize_path( $base ), true ) ) {
+				$directory = false;
+			}
+		}
+
+		$watermarked = $this->is_attachment_watermarked( $attachment_id );
+		$in_flight = false;
+		if ( ! $deleting && ! $watermarked ) {
+			$in_flight = ( is_array( $row ) && $row['claim']['state'] === 'pending' && $row['claim']['created_at'] + self::CLIENT_SIDE_CLAIM_STALE_AFTER > time() ) || $payload_valid;
+		}
+		if ( ! $deleting ) {
+			// Files a rendered claim watermarked but could not commit may still be
+			// registered by that claim's own retry until the claim ages out.
+			$in_flight = $in_flight || ( is_array( $row ) && $row['claim']['state'] === 'rendered' && $row['claim']['updated_at'] + self::CLIENT_SIDE_CLAIM_TTL > time() );
+		}
+		$inventory['in_flight'] = $in_flight;
+
+		foreach ( $names as $name ) {
+			$normalized = wp_normalize_path( $name );
+			$basename = wp_basename( $normalized );
+			// A malformed or extended metadata field can still name this file.
+			// Keeping a false positive is safer than deleting a registered file.
+			if ( isset( $referenced[ $normalized ] ) || isset( $referenced[ $basename ] ) || ( $basename !== '' && strpos( $metadata_raw, $basename ) !== false ) ) {
+				continue;
+			}
+
+			$entry = [ 'file' => sanitize_text_field( $basename ), 'name' => $name, 'path' => '', 'state' => 'manual' ];
+			$canonical = $relative_dir === '' ? $basename : $relative_dir . '/' . $basename;
+			$valid_name = $basename !== '' && $basename[0] !== '.' && $this->is_valid_client_side_relative_path( $basename ) && ( $normalized === $basename || $normalized === $canonical );
+			if ( ! $ownership_uncertain && $directory !== false && $valid_name ) {
+				$path = wp_normalize_path( $directory ) . '/' . $basename;
+				if ( ! file_exists( $path ) && ! is_link( $path ) ) {
+					$entry['state'] = 'missing';
+				} elseif ( ! is_link( $path ) && is_file( $path ) && wp_normalize_path( dirname( (string) realpath( $path ) ) ) === wp_normalize_path( $directory ) && ! $this->is_file_referenced_by_other_attachment( $attachment_id, $canonical ) ) {
+					$entry['path'] = $path;
+					// phpcs:ignore WordPress.PHP.NoSilencedErrors.Discouraged -- A stat failure must keep the file for manual review.
+					$modified = @filemtime( $path );
+					if ( $modified !== false ) {
+						$entry['state'] = ( ! $deleting && ! $watermarked && ( $in_flight || $modified > time() - self::CLIENT_SIDE_CLAIM_STALE_AFTER ) ) ? 'awaiting_finalize' : 'removable';
+					}
+				}
+			}
+			$inventory['files'][] = $entry;
+		}
+
+		return $inventory;
+	}
+
+	/** @return bool */
+	private function is_file_referenced_by_other_attachment( $attachment_id, $relative ) {
+		global $wpdb;
+		// A basename match may belong to another directory. Keep the file for
+		// manual review rather than risk deleting a shared file.
+		$basename = wp_basename( $relative );
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery -- Conservative ownership probe before deleting an unregistered file.
+		$owner = $wpdb->get_var( $wpdb->prepare(
+			"SELECT post_id FROM {$wpdb->postmeta} WHERE post_id <> %d AND meta_key IN ( '_wp_attached_file', '_wp_attachment_metadata', '_wp_sideloaded_file' ) AND meta_value LIKE %s LIMIT 1",
+			(int) $attachment_id,
+			'%' . $wpdb->esc_like( $basename ) . '%'
+		) );
+		return $owner !== null || $wpdb->last_error !== '';
+	}
+
+	/**
+	 * Remove provably owned unregistered sideloaded files of an attachment that
+	 * is being deleted. WordPress removes only files its metadata references.
+	 *
+	 * @param int $attachment_id Attachment ID.
+	 * @return void
+	 */
+	private function delete_client_side_orphans_with_attachment( $attachment_id ) {
+		$inventory = $this->inventory_client_side_orphans( $attachment_id, true );
+		foreach ( $inventory['files'] as $entry ) {
+			if ( $entry['state'] === 'removable' ) {
+				// phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink -- Deletes one contained, unreferenced, attachment-owned file under the attachment deletion fence.
+				@unlink( $entry['path'] );
+			}
+		}
+	}
+
+	/**
 	 * Determine whether the current upload should follow admin automatic watermark rules.
 	 *
 	 * @return bool
@@ -529,23 +2017,48 @@ class Image_Watermark_Upload_Handler {
 
 	/**
 	 * Detect REST media uploads that originate from wp-admin screens such as Gutenberg.
+	 * The route comes from the matched request, so pretty and plain
+	 * (?rest_route=) permalinks classify the same way.
 	 *
 	 * @param string $ref Request referer.
 	 * @return bool
 	 */
 	private function is_rest_admin_media_upload( $ref ) {
-		if ( ! ( defined( 'REST_REQUEST' ) && REST_REQUEST ) ) {
+		$phase = $this->current_client_side_phase();
+		if ( $phase === null && ! ( defined( 'REST_REQUEST' ) && REST_REQUEST ) ) {
 			return false;
 		}
 
-		$request_uri = isset( $_SERVER['REQUEST_URI'] ) ? (string) wp_unslash( $_SERVER['REQUEST_URI'] ) : '';
-		$rest_media_route = '/' . rest_get_url_prefix() . '/wp/v2/media';
-
-		if ( strpos( $request_uri, $rest_media_route ) === false ) {
+		if ( ! preg_match( '#^/wp/v2/media(?:/|$)#', $this->current_rest_route( $phase ) ) ) {
 			return false;
 		}
 
 		return ( $ref !== '' && strpos( $ref, admin_url() ) !== false );
+	}
+
+	/**
+	 * Resolve the REST route being served: the matched client-side request,
+	 * then the rest_route query variable WordPress sets for both permalink
+	 * styles, then the request URI below the REST prefix.
+	 *
+	 * @param array|null $phase Current client-side phase.
+	 * @return string
+	 */
+	private function current_rest_route( $phase ) {
+		if ( $phase !== null ) {
+			return (string) $phase['request']->get_route();
+		}
+
+		if ( isset( $GLOBALS['wp'] ) && is_object( $GLOBALS['wp'] ) && ! empty( $GLOBALS['wp']->query_vars['rest_route'] ) && is_string( $GLOBALS['wp']->query_vars['rest_route'] ) ) {
+			return '/' . trim( $GLOBALS['wp']->query_vars['rest_route'], '/' );
+		}
+
+		$request_uri = isset( $_SERVER['REQUEST_URI'] ) && is_string( $_SERVER['REQUEST_URI'] ) ? (string) wp_unslash( $_SERVER['REQUEST_URI'] ) : '';
+		$path = (string) wp_parse_url( $request_uri, PHP_URL_PATH );
+		$prefix = '/' . trim( rest_get_url_prefix(), '/' ) . '/';
+		$position = strpos( $path, $prefix );
+
+		return $position === false ? '' : '/' . substr( $path, $position + strlen( $prefix ) );
 	}
 
 	/**
@@ -1431,6 +2944,10 @@ class Image_Watermark_Upload_Handler {
 			return $this->early_operation_failure( $data, $attachment_id, 'apply', $context, $method, 'invalid_metadata', $msg, $method === 'manual' ? 'error' : 'skipped' );
 		}
 
+		if ( $this->is_unfinalized_client_side_replacement( $attachment_id, $data ) ) {
+			return $this->early_operation_failure( $data, $attachment_id, 'apply', $context, $method, 'client_side_upload_unfinalized', $this->client_side_unfinalized_message() );
+		}
+
 		$options = $this->normalize_rotation_options( apply_filters( 'iw_watermark_options', $this->plugin->options ) );
 
 		// Use shared validation
@@ -1601,6 +3118,13 @@ class Image_Watermark_Upload_Handler {
 
 			$original_file = get_attached_file( $attachment_id );
 			$reapply = ! $recovered_temporary_sources && (int) get_post_meta( $attachment_id, $this->plugin->get_watermarked_meta_key(), true ) === 1;
+			if ( $reapply && $this->initial_apply_only_attachment_id === $attachment_id ) {
+				// A deferred client-side upload is only ever watermarked by an initial
+				// apply. Rechecked under the lease and after predecessor reconciliation,
+				// so a concurrent or partially promoted finalize cannot restore the
+				// backup and regenerate server-side sub-sizes.
+				return $this->operation_terminal_skip( $operation, $data, $context, 'already_watermarked', __( 'Automatic watermarking was skipped because the image is already watermarked.', 'image-watermark' ) );
+			}
 			$previous_derivatives = [];
 			if ( $reapply ) {
 				$previous_derivatives = array_merge( $this->recoverable_derivative_paths( $operation, $upload_dir ), $this->snapshot_registered_derivatives( $data, $original_file, $upload_dir ) );
@@ -1789,6 +3313,10 @@ class Image_Watermark_Upload_Handler {
 		if ( ! is_array( $data ) || empty( $data['file'] ) || ! is_string( $data['file'] ) ) {
 			$err = __( 'Invalid attachment metadata.', 'image-watermark' );
 			return $this->early_operation_failure( $data, $attachment_id, 'remove', 'manual-remove', $method, 'invalid_metadata', $err );
+		}
+
+		if ( $this->is_unfinalized_client_side_replacement( $attachment_id, $data ) ) {
+			return $this->early_operation_failure( $data, $attachment_id, 'remove', 'manual-remove', $method, 'client_side_upload_unfinalized', $this->client_side_unfinalized_message() );
 		}
 
 		if ( ! is_array( $options ) ) {
@@ -3342,12 +4870,30 @@ class Image_Watermark_Upload_Handler {
 	}
 
 	/** @return array */
+	private function operation_terminal_skip( &$operation, $data, $context, $code, $message ) {
+		$sizes = [ 'processed' => [], 'failed' => [], 'skipped' => [ [ 'name' => 'all', 'code' => $code ] ] ];
+		if ( ! $this->set_operation_state( $operation, 'skipped', [ 'code' => $code, 'counts' => [ 'processed' => 0, 'failed' => 0 ] ] ) ) {
+			return $this->operation_failure( $data, '', $operation['attachment_id'], $context, $this->operation_result( 'interrupted', $operation['token'], 'journal_write_failed', $message, true, $sizes ) );
+		}
+		if ( ! $this->cleanup_operation_record_artifacts( $operation, $operation['journal']['current'], false ) ) {
+			$this->set_operation_state( $operation, 'skipped', [ 'cleanup_pending' => true ] );
+		}
+		$this->operation_result( 'skipped', $operation['token'], $code, $message, false, $sizes );
+		$this->record_last_operation( $operation['attachment_id'], 'skipped', $code, $message, $context, [], [], $sizes['skipped'], 'skipped' );
+
+		return $data;
+	}
+
+	/** @return array */
 	private function operation_complete( &$operation, $data, $attachment_id, $method, $context, $code, $message, $processed ) {
 		if ( ! $this->set_operation_state( $operation, 'complete', [ 'code' => $code, 'metadata_committed' => true, 'counts' => [ 'processed' => count( $processed ), 'failed' => 0 ] ] ) ) {
 			return $this->operation_terminal_failure( $operation, $data, $method, $context, 'partial', 'journal_write_failed', __( 'Watermarked files were prepared, but completion could not be safely recorded.', 'image-watermark' ), true, $processed );
 		}
 		$this->operation_result( 'complete', $operation['token'], $code, $message, false, [ 'processed' => $processed, 'skipped' => [], 'failed' => [] ] );
 		$this->record_last_operation( $attachment_id, 'success', $code, $message, $context, $processed, [], [], 'complete' );
+		if ( in_array( $context, [ 'manual-apply', 'manual-remove' ], true ) ) {
+			$this->settle_client_side_claim_after_manual( $attachment_id, $context );
+		}
 		if ( ! $this->cleanup_owned_operation_stages( $operation, true ) ) {
 			$this->set_operation_state( $operation, 'complete', [ 'cleanup_pending' => true ] );
 		} elseif ( ! $this->clear_completed_recovery_authority( $operation ) ) {
@@ -5905,6 +7451,7 @@ class Image_Watermark_Upload_Handler {
 		if ( $journal !== false ) {
 			$this->delete_attachment_journal_artifacts( $operation, $journal );
 		}
+		$this->delete_client_side_orphans_with_attachment( $attachment_id );
 
 		$filepath = get_post_meta( $attachment_id, '_wp_attached_file', true );
 		$backup = $this->resolve_backup_path( $filepath );

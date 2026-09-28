@@ -5,7 +5,7 @@ Tags: image, images, watermark, watermarking, protection
 Requires at least: 6.3
 Requires PHP: 7.3
 Tested up to: 7.1
-Stable tag: 2.0.14
+Stable tag: 2.0.15
 License: MIT
 License URI: https://opensource.org/licenses/MIT
 
@@ -115,6 +115,10 @@ No. The right-click, drag-and-drop, and developer-tools protections are browser-
 3. screenshot-3.png
 
 == Changelog ==
+
+= 2.0.15 =
+* Fix: Apply automatic watermarks safely when WordPress 7.1 finalizes client-side media uploads
+* Fix: Save scaled watermark size, opacity, and small-image thresholds correctly
 
 = 2.0.14 =
 * Fix: Preserve the original JPEG file permissions when watermarking rewrites image metadata
@@ -355,5 +359,5 @@ Initial release
 
 == Upgrade Notice ==
 
-= 2.0.14 =
-Keeps the original image file permissions when watermarking rewrites JPEG metadata.
+= 2.0.15 =
+Restores automatic watermarking for WordPress 7.1 client-side uploads and makes scale, opacity, and small-image threshold settings save correctly.

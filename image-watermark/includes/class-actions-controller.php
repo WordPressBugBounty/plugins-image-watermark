@@ -395,6 +395,57 @@ class Image_Watermark_Actions_Controller {
 	}
 
 	/**
+	 * AJAX handler: repairs a WordPress 7.1 client-side upload.
+	 *
+	 * Nonce action: iw_client_side_repair
+	 * Capability:   upload_files and edit_post; cleanup also requires delete_post
+	 * POST params:  attachment_id (int), _iw_repair_nonce (string),
+	 *               repair ('complete' replays a deferred finalize through the
+	 *               finalize route; 'cleanup' removes provably owned
+	 *               unregistered sideloaded files)
+	 *
+	 * @return void Outputs JSON and exits.
+	 */
+	public function client_side_repair_ajax() {
+		if ( ! isset( $_POST['_iw_repair_nonce'], $_POST['attachment_id'], $_POST['repair'] ) ) {
+			wp_send_json_error( $this->error_response(
+				__( 'Missing required parameters.', 'image-watermark' ),
+				'',
+				'missing_params'
+			) );
+		}
+
+		$attachment_request = is_string( $_POST['attachment_id'] ) ? wp_unslash( $_POST['attachment_id'] ) : $_POST['attachment_id'];
+		$nonce_request      = is_string( $_POST['_iw_repair_nonce'] ) ? wp_unslash( $_POST['_iw_repair_nonce'] ) : '';
+		$authorization = $this->authorize_attachment_request( $attachment_request, $nonce_request, 'iw_client_side_repair' );
+
+		if ( ! $authorization['authorized'] ) {
+			wp_send_json_error( $authorization['error'] );
+		}
+
+		$attachment_id = $authorization['attachment_id'];
+		$repair = is_string( $_POST['repair'] ) ? sanitize_key( wp_unslash( $_POST['repair'] ) ) : '';
+
+		if ( ! in_array( $repair, [ 'complete', 'cleanup' ], true ) ) {
+			wp_send_json_error( $this->error_response( __( 'Unknown repair action.', 'image-watermark' ), '', 'invalid_repair' ) );
+		}
+
+		if ( $repair === 'cleanup' && ! current_user_can( 'delete_post', $attachment_id ) ) {
+			wp_send_json_error( $this->error_response( __( 'You do not have permission to delete files of this attachment.', 'image-watermark' ), '', 'attachment_forbidden' ) );
+		}
+
+		$result = $repair === 'complete'
+			? $this->upload_handler->complete_client_side_upload( $attachment_id )
+			: $this->upload_handler->cleanup_client_side_orphans( $attachment_id );
+
+		if ( empty( $result['success'] ) ) {
+			wp_send_json_error( array_merge( $this->error_response( $result['message'], '', $result['code'] ), [ 'removed' => $result['removed'], 'kept' => $result['kept'] ] ) );
+		}
+
+		wp_send_json_success( $result );
+	}
+
+	/**
 	 * Handles bulk actions from the media list table.
 	 */
 	public function watermark_bulk_action() {

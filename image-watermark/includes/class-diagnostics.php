@@ -297,6 +297,64 @@ class Image_Watermark_Diagnostics {
 			''
 		);
 
+		// Client-side (WordPress 7.1+) uploads are watermarked when the editor
+		// finalizes them. A long-pending claim with no recorded finalize attempt
+		// means that never happened; a recorded attempt is reported as such.
+		$client_side = $this->plugin->get_upload_handler()->describe_client_side_claim( $attachment_id );
+		if ( ! empty( $client_side ) && $client_side['state'] === 'pending' ) {
+			$retry_pending = $client_side['attempts'] > 0 || $client_side['code'] !== '';
+			$action = __( 'Review the last watermark operation, correct the reported issue, then apply the watermark manually or re-upload the image. Regenerate thumbnails first if sizes are missing.', 'image-watermark' );
+			if ( $client_side['code'] === 'busy' && $client_side['deferred'] ) {
+				$client_side_code = 'client_side_finalize_deferred';
+				$client_side_message = __( 'Finalization was deferred because another watermark operation was running. The new image sizes are not registered yet.', 'image-watermark' );
+				$action = __( 'Complete the deferred upload once the other operation finishes, or apply the watermark manually.', 'image-watermark' );
+			} elseif ( $client_side['code'] === 'finalize_rejected' ) {
+				$client_side_code = 'client_side_watermark_retry_pending';
+				$client_side_message = __( 'WordPress rejected the request that finalizes this upload, so automatic watermarking did not run.', 'image-watermark' );
+			} elseif ( $retry_pending ) {
+				$client_side_code = 'client_side_watermark_retry_pending';
+				$client_side_message = __( 'Automatic watermarking did not complete during finalization.', 'image-watermark' );
+			} elseif ( $client_side['stale'] ) {
+				$client_side_code = 'client_side_upload_incomplete';
+				$client_side_message = __( 'The browser did not finish processing this upload, so automatic watermarking did not run.', 'image-watermark' );
+			} else {
+				$client_side_code = 'client_side_upload_pending';
+				$client_side_message = __( 'Automatic watermarking will run when the editor finishes processing this upload.', 'image-watermark' );
+			}
+			if ( $eligibility['code'] === 'client_side_upload_unfinalized' ) {
+				$action = $client_side['deferred']
+					? __( 'Complete the deferred upload once the other operation finishes. Manual watermarking is unavailable until its replacement main file is finalized.', 'image-watermark' )
+					: __( 'Re-upload the image. Manual watermarking is unavailable because its replacement main file was never finalized.', 'image-watermark' );
+			}
+			$items[] = $this->item(
+				$client_side_code,
+				( $retry_pending || $client_side['stale'] ) ? self::STATUS_WARNING : self::STATUS_INFO,
+				__( 'Client-side upload', 'image-watermark' ),
+				$client_side_message,
+				( $retry_pending || $client_side['stale'] || $eligibility['code'] === 'client_side_upload_unfinalized' ) ? $action : ''
+			);
+		}
+
+		// Sideloaded files WordPress recorded for this attachment but never
+		// registered. Basenames and states only; no server paths.
+		$orphans = $this->plugin->get_upload_handler()->describe_client_side_orphans( $attachment_id );
+		if ( $orphans['total'] > 0 ) {
+			$actionable = false;
+			foreach ( $orphans['files'] as $orphan ) {
+				$actionable = $actionable || $orphan['state'] !== 'awaiting_finalize';
+			}
+			$orphan_item = $this->item(
+				'client_side_unregistered_files',
+				$actionable ? self::STATUS_WARNING : self::STATUS_INFO,
+				__( 'Unregistered sideloaded files', 'image-watermark' ),
+				/* translators: %d: Number of unregistered sideloaded files. */
+				sprintf( _n( '%d file produced during a client-side upload is not registered with this image and is not watermarked.', '%d files produced during a client-side upload are not registered with this image and are not watermarked.', $orphans['total'], 'image-watermark' ), $orphans['total'] ),
+				$actionable ? __( 'Clean up the removable files. Files marked for manual review could not be proven to belong to this image and must be checked on the server.', 'image-watermark' ) : __( 'These files may still be registered when the upload finishes.', 'image-watermark' )
+			);
+			$orphan_item['files'] = $orphans['files'];
+			$items[] = $orphan_item;
+		}
+
 		// Backup
 		$backup_enabled = ! empty( $options['backup']['backup_image'] );
 		$relative_path  = get_post_meta( $attachment_id, '_wp_attached_file', true );

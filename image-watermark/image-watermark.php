@@ -2,7 +2,7 @@
 /*
 Plugin Name: Image Watermark
 Description: Secure and brand your images with automatic watermarks. Apply image or text overlays to new uploads and bulk process existing Media Library images with ease.
-Version: 2.0.14
+Version: 2.0.15
 Requires at least: 6.3
 Requires PHP: 7.3
 Author: dFactory
@@ -31,7 +31,7 @@ if ( ! defined( 'ABSPATH' ) )
  * Image Watermark class.
  *
  * @class Image_Watermark
- * @version	2.0.14
+ * @version	2.0.15
  */
 final class Image_Watermark {
 
@@ -108,7 +108,7 @@ final class Image_Watermark {
 				'preserve_timestamps' => false
 			]
 		],
-		'version'	 => '2.0.14'
+		'version'	 => '2.0.15'
 	];
 	public $options = [];
 
@@ -157,6 +157,7 @@ final class Image_Watermark {
 		add_action( 'delete_attachment', [ $this->upload_handler, 'delete_attachment' ] );
 		add_action( 'wp_ajax_iw_watermark_bulk_action', [ $this->watermark_controller, 'watermark_action_ajax' ] );
 		add_action( 'wp_ajax_iw_diagnose_attachment', [ $this->watermark_controller, 'diagnose_attachment_ajax' ] );
+		add_action( 'wp_ajax_iw_client_side_repair', [ $this->watermark_controller, 'client_side_repair_ajax' ] );
 		add_action( 'wp_ajax_iw_text_preview', [ $this, 'text_preview_ajax' ] );
 		add_action( 'wp_ajax_iw_dismiss_notice', [ $this, 'dismiss_review_notice' ] );
 		add_action( 'attachment_submitbox_misc_actions', [ $this, 'render_attachment_editor_actions' ], 20 );

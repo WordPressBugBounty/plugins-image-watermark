@@ -961,6 +961,26 @@ class Image_Watermark_Settings {
 	 */
 	private function validate_watermark_custom_fields( $input, &$output ) {
 		$image = isset( $input['watermark_image'] ) && is_array( $input['watermark_image'] ) ? $input['watermark_image'] : [];
+		$bounded_integer_fields = [
+			'width'            => [ 0, 100 ],
+			'transparent'      => [ 0, 100 ],
+			'min_image_width'  => [ 0, null ],
+			'min_image_height' => [ 0, null ],
+		];
+
+		// These inputs use UI field identifiers that differ from their stored option
+		// keys, or share one custom renderer, so the generic field loop cannot save them.
+		foreach ( $bounded_integer_fields as $field_key => $bounds ) {
+			if ( ! array_key_exists( $field_key, $image ) || ! is_scalar( $image[$field_key] ) || is_bool( $image[$field_key] ) || filter_var( $image[$field_key], FILTER_VALIDATE_INT ) === false ) {
+				continue;
+			}
+
+			$value = max( $bounds[0], (int) $image[$field_key] );
+			if ( $bounds[1] !== null ) {
+				$value = min( $bounds[1], $value );
+			}
+			$output['watermark_image'][$field_key] = $value;
+		}
 
 		if ( array_key_exists( 'watermark_on', $input ) ) {
 			$selected = $input['watermark_on'];
