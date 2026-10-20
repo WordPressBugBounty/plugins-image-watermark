@@ -2282,14 +2282,15 @@ class Image_Watermark_Upload_Handler {
 				return $result;
 			}
 
-			$backup_filepath = $this->get_image_backup_filepath( $data['file'] );
-			if ( $backup_filepath === false ) {
+			$backup = $this->describe_backup_path( $data['file'] );
+			$backup_filepath = $backup['path'];
+			if ( $backup['code'] !== '' && $backup['code'] !== 'backup_missing' ) {
 				$result['valid'] = false;
-				$result['code']  = 'invalid_backup_path';
-				$result['error'] = __( 'The attachment backup path is invalid.', 'image-watermark' );
+				$result['code']  = $backup['code'];
+				$result['error'] = $backup['message'];
 				return $result;
 			}
-			if ( ! $this->is_valid_backup_file( $backup_filepath ) ) {
+			if ( $backup_filepath === false || ! $this->is_valid_backup_file( $backup_filepath ) ) {
 				$result['valid'] = false;
 				$result['code']  = 'backup_missing';
 				$result['error'] = __( 'No watermark backup found for this image.', 'image-watermark' );
@@ -3131,11 +3132,12 @@ class Image_Watermark_Upload_Handler {
 				if ( ! $this->watermark_source_is_available( $options, $upload_dir ) ) {
 					return $this->operation_terminal_failure( $operation, $data, $method, $context, 'failed', 'watermark_source_missing', __( 'Watermark not applied: the watermark source image file is missing from the server. Please re-select a watermark image in settings.', 'image-watermark' ) );
 				}
-				$backup = $this->get_image_backup_filepath( $data['file'] );
-				if ( $backup === false ) {
-					return $this->operation_terminal_failure( $operation, $data, $method, $context, 'failed', 'invalid_backup_path', __( 'The attachment backup path is invalid.', 'image-watermark' ), true );
+				$backup_lookup = $this->describe_backup_path( $data['file'] );
+				$backup = $backup_lookup['path'];
+				if ( $backup_lookup['code'] !== '' && $backup_lookup['code'] !== 'backup_missing' ) {
+					return $this->operation_terminal_failure( $operation, $data, $method, $context, 'failed', $backup_lookup['code'], $backup_lookup['message'], true );
 				}
-				if ( ! $this->is_valid_backup_file( $backup ) ) {
+				if ( $backup === false || ! $this->is_valid_backup_file( $backup ) ) {
 					return $this->operation_terminal_failure( $operation, $data, $method, $context, 'failed', 'backup_missing', __( 'Watermark not applied because the original backup is missing.', 'image-watermark' ) );
 				}
 				if ( ! $this->stage_copy_and_promote( $operation, $backup, $original_file, 'restore-source', [] ) ) {
@@ -3340,14 +3342,14 @@ class Image_Watermark_Upload_Handler {
 		if ( ! is_string( $filepath ) || $filepath === '' ) {
 			$filepath = $upload_dir['basedir'] . '/' . ltrim( wp_normalize_path( $data['file'] ), '/' );
 		}
-		$backup_filepath = $this->get_image_backup_filepath( get_post_meta( $attachment_id, '_wp_attached_file', true ) );
-		if ( $backup_filepath === false ) {
-			$err = __( 'The attachment backup path is invalid.', 'image-watermark' );
-			return $this->early_operation_failure( $data, $attachment_id, 'remove', 'manual-remove', $method, 'invalid_backup_path', $err );
+		$backup = $this->describe_backup_path( get_post_meta( $attachment_id, '_wp_attached_file', true ) );
+		$backup_filepath = $backup['path'];
+		if ( $backup['code'] !== '' && $backup['code'] !== 'backup_missing' ) {
+			return $this->early_operation_failure( $data, $attachment_id, 'remove', 'manual-remove', $method, $backup['code'], $backup['message'] );
 		}
 
 		// Backup must exist (already checked by validation, but double-check for safety)
-		if ( ! $this->is_valid_backup_file( $backup_filepath ) ) {
+		if ( $backup_filepath === false || ! $this->is_valid_backup_file( $backup_filepath ) ) {
 			$err = __( 'No watermark backup found for this image.', 'image-watermark' );
 			return $this->early_operation_failure( $data, $attachment_id, 'remove', 'manual-remove', $method, 'backup_missing', $err );
 		}
@@ -4056,10 +4058,35 @@ class Image_Watermark_Upload_Handler {
 		return $this->resolve_operation_root_path( $this->get_backup_root_dir(), $relative, $create_directories, $context, $attachment_id );
 	}
 
+	/**
+	 * Describe a read-only backup lookup without turning a failed resolution into
+	 * a usable path. Failure details belong to this call, never shared handler state.
+	 *
+	 * @return array{path:string|false,code:string,message:string}
+	 */
+	public function describe_backup_path( $relative ) {
+		$failure = '';
+		$resolved = $this->resolve_operation_root_path( $this->get_backup_root_dir(), $relative, false, '', 0, $failure );
+		$code = '';
+		$message = '';
+		if ( $resolved === false ) {
+			if ( $failure === 'missing_directory' ) {
+				$code = 'backup_missing';
+			} elseif ( $failure === 'invalid_path' ) {
+				$code = 'invalid_backup_path';
+				$message = __( 'The attachment backup path is invalid.', 'image-watermark' );
+			} else {
+				$code = 'backup_path_unavailable';
+				$message = __( 'The attachment backup path could not be verified. Check access to the configured backup location.', 'image-watermark' );
+			}
+		}
+		return [ 'path' => $resolved === false ? false : $resolved['path'], 'code' => $code, 'message' => $message ];
+	}
+
 	/** @return array|false */
-	private function resolve_upload_artifact_path( $relative, $create_directories = false, $context = '', $attachment_id = 0 ) {
+	private function resolve_upload_artifact_path( $relative, $create_directories = false, $context = '', $attachment_id = 0, &$failure = null ) {
 		$upload_dir = wp_upload_dir();
-		return $this->resolve_operation_root_path( $upload_dir['basedir'], $relative, $create_directories, $context, $attachment_id );
+		return $this->resolve_operation_root_path( $upload_dir['basedir'], $relative, $create_directories, $context, $attachment_id, $failure );
 	}
 
 	/** @return string|false */
@@ -4104,15 +4131,18 @@ class Image_Watermark_Upload_Handler {
 	}
 
 	/** @return array|false */
-	private function resolve_operation_root_path( $root, $relative, $create_directories = false, $context = '', $attachment_id = 0 ) {
+	private function resolve_operation_root_path( $root, $relative, $create_directories = false, $context = '', $attachment_id = 0, &$failure = null ) {
+		$failure = 'invalid_path';
 		$relative = $this->normalize_operation_relative_path( $relative );
 		if ( $relative === false || ! is_string( $root ) || $root === '' || strpos( $root, "\0" ) !== false ) {
 			return false;
 		}
 
+		$failure = 'unavailable';
 		$root = wp_normalize_path( $root );
 		if ( ! is_dir( $root ) ) {
 			if ( ! $create_directories ) {
+				$failure = $this->operation_directory_failure( $root );
 				return false;
 			}
 			$missing = [];
@@ -4137,6 +4167,7 @@ class Image_Watermark_Upload_Handler {
 				}
 				$resolved = realpath( $current );
 				if ( $resolved === false || ! $this->operation_path_is_within_root( $resolved, $canonical_ancestor, true ) ) {
+					$failure = $resolved === false ? 'unavailable' : 'invalid_path';
 					return false;
 				}
 				$current = $resolved;
@@ -4154,11 +4185,13 @@ class Image_Watermark_Upload_Handler {
 			$candidate = $directory . DIRECTORY_SEPARATOR . $segment;
 			if ( ! is_dir( $candidate ) ) {
 				if ( ! $create_directories || ! $this->make_directory( $candidate, $context, $attachment_id ) ) {
+					$failure = $this->operation_directory_failure( $candidate );
 					return false;
 				}
 			}
 			$resolved = realpath( $candidate );
 			if ( $resolved === false || ! $this->operation_path_is_within_root( $resolved, $canonical_root, true ) ) {
+				$failure = $resolved === false ? 'unavailable' : 'invalid_path';
 				return false;
 			}
 			$directory = $resolved;
@@ -4166,16 +4199,53 @@ class Image_Watermark_Upload_Handler {
 
 		$path = $directory . DIRECTORY_SEPARATOR . $filename;
 		if ( is_link( $path ) ) {
+			$failure = 'invalid_path';
 			return false;
 		}
 		if ( file_exists( $path ) ) {
 			$resolved = realpath( $path );
 			if ( $resolved === false || ! $this->operation_path_is_within_root( $resolved, $canonical_root ) ) {
+				$failure = $resolved === false ? 'unavailable' : 'invalid_path';
 				return false;
 			}
 			$path = $resolved;
 		}
+		$failure = '';
 		return [ 'path' => $path, 'relative' => $relative, 'root' => wp_normalize_path( $canonical_root ), 'parent' => wp_normalize_path( $directory ) ];
+	}
+
+	/**
+	 * A failed stat alone cannot distinguish absence from denied access. Only a
+	 * readable parent listing can establish absence; links and non-directories
+	 * are rejected rather than described as a missing backup folder.
+	 *
+	 * @return string
+	 */
+	private function operation_directory_failure( $directory ) {
+		while ( ! is_dir( $directory ) ) {
+			if ( is_link( $directory ) || file_exists( $directory ) ) {
+				return 'invalid_path';
+			}
+			$parent = dirname( $directory );
+			if ( $parent === $directory ) {
+				return 'unavailable';
+			}
+			if ( is_dir( $parent ) ) {
+				$entries = @scandir( $parent );
+				if ( $entries === false ) {
+					return 'unavailable';
+				}
+				$name = basename( $directory );
+				foreach ( $entries as $entry ) {
+					if ( DIRECTORY_SEPARATOR === '\\' ? strcasecmp( $entry, $name ) === 0 : $entry === $name ) {
+						return 'unavailable';
+					}
+				}
+				return 'missing_directory';
+			}
+			$directory = $parent;
+		}
+		return 'unavailable';
 	}
 
 	/** @return string|false */
@@ -4781,11 +4851,14 @@ class Image_Watermark_Upload_Handler {
 	/** @return bool */
 	private function create_staged_backup( &$operation, $data, $upload_dir, $options ) {
 		$backup_record_path = $this->resolve_backup_path( $data['file'], true, 'backup-root', $operation['attachment_id'] );
-		$source_record = $this->resolve_upload_artifact_path( $data['file'] );
+		$source_failure = '';
+		$source_record = $this->resolve_upload_artifact_path( $data['file'], false, '', 0, $source_failure );
 		if ( $backup_record_path === false || $source_record === false ) {
-			if ( $this->normalize_operation_relative_path( $data['file'] ) === false || $source_record === false ) {
-				$operation['backup_error_code'] = 'invalid_backup_path';
-				$operation['backup_error'] = __( 'The attachment backup path is invalid.', 'image-watermark' );
+			if ( $source_record === false ) {
+				$operation['backup_error_code'] = $source_failure === 'invalid_path' ? 'invalid_source_path' : 'source_path_unavailable';
+				$operation['backup_error'] = $source_failure === 'invalid_path'
+					? __( 'The attachment source path is invalid.', 'image-watermark' )
+					: __( 'The attachment source path could not be verified. Check the local image file and attachment metadata.', 'image-watermark' );
 			} else {
 				$operation['backup_error_code'] = 'backup_failed';
 				/* translators: 1: Backup root path. */
@@ -6703,6 +6776,19 @@ class Image_Watermark_Upload_Handler {
 	public function get_image_backup_filepath( $filepath ) {
 		$resolved = $this->resolve_backup_path( $filepath );
 		return $resolved === false ? false : $resolved['path'];
+	}
+
+	/**
+	 * Check backup availability for UI controls without decoding pixel data.
+	 *
+	 * This is only a display check. Operations must use is_valid_backup_file()
+	 * to verify that the backup can be decoded before using it.
+	 *
+	 * @param string|false $filepath Canonically resolved backup path.
+	 * @return bool
+	 */
+	public function is_backup_available_for_display( $filepath ) {
+		return is_string( $filepath ) && $this->has_readable_image_bytes( $filepath );
 	}
 
 	/**

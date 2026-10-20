@@ -2,7 +2,7 @@
 /*
 Plugin Name: Image Watermark
 Description: Secure and brand your images with automatic watermarks. Apply image or text overlays to new uploads and bulk process existing Media Library images with ease.
-Version: 2.0.15
+Version: 2.0.16
 Requires at least: 6.3
 Requires PHP: 7.3
 Author: dFactory
@@ -31,7 +31,7 @@ if ( ! defined( 'ABSPATH' ) )
  * Image Watermark class.
  *
  * @class Image_Watermark
- * @version	2.0.15
+ * @version	2.0.16
  */
 final class Image_Watermark {
 
@@ -108,7 +108,7 @@ final class Image_Watermark {
 				'preserve_timestamps' => false
 			]
 		],
-		'version'	 => '2.0.15'
+		'version'	 => '2.0.16'
 	];
 	public $options = [];
 
@@ -977,7 +977,8 @@ final class Image_Watermark {
 			// is this really an image?
 			if ( in_array( get_post_mime_type( $post->ID ), $this->allowed_mime_types ) && is_array( $data ) ) {
 				$backup_path = $this->get_upload_handler()->get_image_backup_filepath( get_post_meta( $post->ID, '_wp_attached_file', true ) );
-				$remove_action = $this->get_upload_handler()->is_valid_backup_file( $backup_path )
+				// Display check only; the operation validates the backup before restoring it.
+				$remove_action = $this->get_upload_handler()->is_backup_available_for_display( $backup_path )
 					? ' | <a href="#" class="iw-watermark-action delete-watermark" data-action="removewatermark" data-id="' . $post->ID . '">' . __( 'Remove watermark', 'image-watermark' ) . '</a>'
 					: '';
 				$form_fields['image_watermark'] = [
@@ -1405,7 +1406,8 @@ final class Image_Watermark {
 		}
 
 		$backup_path = $this->get_upload_handler()->get_image_backup_filepath( get_post_meta( $post->ID, '_wp_attached_file', true ) );
-		$remove_allowed = $this->get_upload_handler()->is_valid_backup_file( $backup_path );
+		// Display check only; the operation validates the backup before restoring it.
+		$remove_allowed = $this->get_upload_handler()->is_backup_available_for_display( $backup_path );
 		?>
 		<div class="misc-pub-section iw-classic-actions">
 			<button type="button" class="button-link iw-classic-apply"><?php esc_html_e( 'Apply watermark', 'image-watermark' ); ?></button>

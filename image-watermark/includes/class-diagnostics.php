@@ -358,7 +358,8 @@ class Image_Watermark_Diagnostics {
 		// Backup
 		$backup_enabled = ! empty( $options['backup']['backup_image'] );
 		$relative_path  = get_post_meta( $attachment_id, '_wp_attached_file', true );
-		$backup_path    = $relative_path ? $this->plugin->get_upload_handler()->get_image_backup_filepath( $relative_path ) : false;
+		$backup_lookup  = $this->plugin->get_upload_handler()->describe_backup_path( $relative_path );
+		$backup_path    = $relative_path ? $backup_lookup['path'] : false;
 		$backup_exists  = $backup_path && $this->plugin->get_upload_handler()->is_valid_backup_file( $backup_path );
 
 		$inventory_item = $this->item(
@@ -371,13 +372,13 @@ class Image_Watermark_Diagnostics {
 		$inventory_item['inventory'] = $this->build_attachment_file_inventory( $data, $source_file, $upload_dir, $selected_sizes, $is_watermarked, $backup_exists, $attachment_id );
 		$items[] = $inventory_item;
 
-		if ( $relative_path && $backup_path === false ) {
+		if ( $relative_path && $backup_lookup['code'] !== '' && $backup_lookup['code'] !== 'backup_missing' ) {
 			$items[] = $this->item(
-				'invalid_backup_path',
+				$backup_lookup['code'],
 				self::STATUS_ERROR,
 				__( 'Backup', 'image-watermark' ),
-				__( 'The attachment backup path is invalid. No backup file was used.', 'image-watermark' ),
-				__( 'Correct the attachment file record or retry after restoring valid media metadata.', 'image-watermark' )
+				$backup_lookup['message'],
+				__( 'Check access to the configured backup location and verify the attachment file record.', 'image-watermark' )
 			);
 		} elseif ( $backup_exists || $backup_enabled ) {
 			$items[] = $this->item(
