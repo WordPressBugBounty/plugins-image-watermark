@@ -2,7 +2,7 @@
 /*
 Plugin Name: Image Watermark
 Description: Secure and brand your images with automatic watermarks. Apply image or text overlays to new uploads and bulk process existing Media Library images with ease.
-Version: 2.0.16
+Version: 2.0.17
 Requires at least: 6.3
 Requires PHP: 7.3
 Author: dFactory
@@ -31,7 +31,7 @@ if ( ! defined( 'ABSPATH' ) )
  * Image Watermark class.
  *
  * @class Image_Watermark
- * @version	2.0.16
+ * @version	2.0.17
  */
 final class Image_Watermark {
 
@@ -108,7 +108,7 @@ final class Image_Watermark {
 				'preserve_timestamps' => false
 			]
 		],
-		'version'	 => '2.0.16'
+		'version'	 => '2.0.17'
 	];
 	public $options = [];
 
@@ -270,6 +270,10 @@ final class Image_Watermark {
 		if ( $version === null ) {
 			$version = '0.0.0';
 		}
+		// A newer stored version belongs to a later major (for example after a rollback):
+		// keep it and let only the version-independent shape repairs below run.
+		$stored_core = $this->get_migration_version( $stored_version );
+		$is_newer = $stored_core !== null && version_compare( $stored_core, $this->defaults['version'], '>' );
 
 		$stored_options = get_option( 'image_watermark_options', [] );
 		$options = is_array( $stored_options ) ? $stored_options : [];
@@ -326,7 +330,7 @@ final class Image_Watermark {
 
 		// A version is the final commit point: never advertise success before options
 		// have been durably updated and reread.
-		if ( $stored_version !== $this->defaults['version'] ) {
+		if ( ! $is_newer && $stored_version !== $this->defaults['version'] ) {
 			update_option( 'image_watermark_version', $this->defaults['version'], false );
 			if ( get_option( 'image_watermark_version', null ) !== $this->defaults['version'] ) {
 				return false;
@@ -338,13 +342,14 @@ final class Image_Watermark {
 	}
 
 	/**
-	 * Normalize a stored semantic version or return null for absent/corrupt data.
+	 * Return the leading numeric core (major[.minor[.patch]]) of a stored version, or
+	 * null when there is none. Any suffix ("3.0.0-beta.1", "2.0.1-custom") is ignored.
 	 *
 	 * @param mixed $version Version option value.
 	 * @return string|null
 	 */
 	private function get_migration_version( $version ) {
-		return is_string( $version ) && preg_match( '/^\d+(?:\.\d+){0,2}$/', $version ) ? $version : null;
+		return is_string( $version ) && preg_match( '/^\d+(?:\.\d+){0,2}/', $version, $matches ) ? $matches[0] : null;
 	}
 
 	/**
@@ -999,6 +1004,30 @@ final class Image_Watermark {
 	}
 
 	/**
+	 * Format the bulk outcomes worth listing, non-complete outcomes first.
+	 *
+	 * @param array $outcomes Operation outcomes keyed by attachment ID.
+	 * @return string[]
+	 */
+	private function format_bulk_outcomes( $outcomes ) {
+		$first = [];
+		$later = [];
+		foreach ( $outcomes as $attachment_id => $outcome ) {
+			if ( ! is_array( $outcome ) || empty( $outcome['code'] ) )
+				continue;
+			if ( isset( $outcome['outcome'] ) && $outcome['outcome'] === 'complete' ) {
+				// A complete outcome is listed only when it reports skipped sizes, and
+				// after every non-complete outcome so the 20-entry cap never hides one.
+				if ( ! empty( $outcome['sizes']['skipped'] ) && is_array( $outcome['sizes']['skipped'] ) )
+					$later[] = $this->format_bulk_outcome( $attachment_id, $outcome );
+				continue;
+			}
+			$first[] = $this->format_bulk_outcome( $attachment_id, $outcome );
+		}
+		return array_merge( $first, $later );
+	}
+
+	/**
 	 * Format one bounded structured bulk outcome without exposing paths.
 	 *
 	 * @param int   $attachment_id Attachment ID.
@@ -1068,11 +1097,7 @@ final class Image_Watermark {
 					$messages = isset( $handoff['messages'] ) ? (array) $handoff['messages'] : [];
 					$outcomes = isset( $handoff['outcomes'] ) ? (array) $handoff['outcomes'] : [];
 					$remaining = isset( $handoff['remaining'] ) ? (int) $handoff['remaining'] : 0;
-					foreach ( array_slice( $outcomes, 0, 20, true ) as $attachment_id => $outcome ) {
-						if ( ! is_array( $outcome ) || empty( $outcome['code'] ) || ( isset( $outcome['outcome'] ) && $outcome['outcome'] === 'complete' ) )
-							continue;
-						$messages[] = $this->format_bulk_outcome( $attachment_id, $outcome );
-					}
+					$messages = array_merge( $messages, $this->format_bulk_outcomes( $outcomes ) );
 				} elseif ( isset( $_REQUEST['messages'] ) ) {
 						$raw_messages = wp_unslash( $_REQUEST['messages'] );
 						$raw_messages = is_array( $raw_messages ) ? $raw_messages : [ $raw_messages ];
@@ -1082,11 +1107,7 @@ final class Image_Watermark {
 				if ( empty( $handoff ) && isset( $_REQUEST['iw_outcomes'] ) && is_string( $_REQUEST['iw_outcomes'] ) ) {
 						$outcomes = json_decode( rawurldecode( wp_unslash( $_REQUEST['iw_outcomes'] ) ), true );
 						if ( is_array( $outcomes ) ) {
-							foreach ( array_slice( $outcomes, 0, 20, true ) as $attachment_id => $outcome ) {
-								if ( ! is_array( $outcome ) || empty( $outcome['code'] ) || ( isset( $outcome['outcome'] ) && $outcome['outcome'] === 'complete' ) )
-									continue;
-								$messages[] = $this->format_bulk_outcome( $attachment_id, $outcome );
-							}
+							$messages = array_merge( $messages, $this->format_bulk_outcomes( $outcomes ) );
 						}
 					}
 					$messages = array_slice( array_unique( $messages ), 0, 20 );

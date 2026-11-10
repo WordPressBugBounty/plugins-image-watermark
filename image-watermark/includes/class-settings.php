@@ -754,7 +754,7 @@ class Image_Watermark_Settings {
 		}
 
 		// The Settings API has already unslashed $input. Do not read the raw option
-		// payload from $_POST or unslash it again; this method is reusable by P00-12.
+		// payload from $_POST or unslash it again; the preview can reuse this method.
 		$output = $existing;
 		$this->validate_settings_fields( $config[$current_tab]['fields'], $input, $output );
 

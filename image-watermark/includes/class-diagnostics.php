@@ -114,6 +114,12 @@ class Image_Watermark_Diagnostics {
 		);
 
 		if ( ! $mime_ok ) {
+			// An automatic upload whose final type another plugin changed records
+			// its skipped outcome here, so it stays visible.
+			$last_op_item = $this->last_operation_item( $attachment_id );
+			if ( $last_op_item !== null ) {
+				$items[] = $last_op_item;
+			}
 			return $items;
 		}
 
@@ -415,53 +421,68 @@ class Image_Watermark_Diagnostics {
 		);
 
 		// Last operation
-		$last_op = $this->plugin->get_upload_handler()->get_attachment_operation_outcome( $attachment_id );
-
-		if ( is_array( $last_op ) && ! empty( $last_op['outcome'] ) ) {
-			$status_map = [
-				'complete'    => self::STATUS_OK,
-				'failed'      => self::STATUS_ERROR,
-				'interrupted' => self::STATUS_ERROR,
-				'partial'     => self::STATUS_WARNING,
-				'skipped'     => self::STATUS_WARNING,
-			];
-			$op_status = isset( $status_map[ $last_op['outcome'] ] ) ? $status_map[ $last_op['outcome'] ] : self::STATUS_INFO;
-			$op_msg    = ! empty( $last_op['message'] ) ? $last_op['message'] : $last_op['outcome'];
-
-			if ( ! empty( $last_op['context'] ) ) {
-				$op_msg = '[' . $last_op['context'] . '] ' . $op_msg;
-			}
-
-			if ( ! empty( $last_op['time'] ) ) {
-				$op_msg .= ' (' . date_i18n( get_option( 'date_format' ) . ' ' . get_option( 'time_format' ), (int) $last_op['time'] ) . ')';
-			}
-			$sizes = isset( $last_op['sizes'] ) && is_array( $last_op['sizes'] ) ? $last_op['sizes'] : [];
-			/* translators: 1: Processed size count. 2: Failed size count. 3: Skipped size count. */
-			$op_msg .= sprintf( __( ' Processed: %1$d; failed: %2$d; skipped: %3$d.', 'image-watermark' ), count( isset( $sizes['processed'] ) ? $sizes['processed'] : [] ), count( isset( $sizes['failed'] ) ? $sizes['failed'] : [] ), count( isset( $sizes['skipped'] ) ? $sizes['skipped'] : [] ) );
-			$operation_sizes = [];
-			$remaining_size_details = 20;
-			foreach ( [ 'processed', 'failed', 'skipped' ] as $size_status ) {
-				$values = isset( $sizes[ $size_status ] ) && is_array( $sizes[ $size_status ] ) ? $sizes[ $size_status ] : [];
-				$operation_sizes[ $size_status ] = array_slice( $values, 0, $remaining_size_details );
-				$remaining_size_details -= count( $operation_sizes[ $size_status ] );
-			}
-
-			$item = $this->item(
-				'last_op_' . ( ! empty( $last_op['code'] ) ? sanitize_key( $last_op['code'] ) : 'unknown' ),
-				$op_status,
-				__( 'Last operation', 'image-watermark' ),
-				$op_msg,
-				''
-			);
-			$item['operation'] = [
-				'outcome' => sanitize_key( $last_op['outcome'] ),
-				'code'    => ! empty( $last_op['code'] ) ? sanitize_key( $last_op['code'] ) : '',
-				'sizes'   => $operation_sizes,
-			];
-			$items[] = $item;
+		$last_op_item = $this->last_operation_item( $attachment_id );
+		if ( $last_op_item !== null ) {
+			$items[] = $last_op_item;
 		}
 
 		return $items;
+	}
+
+	/**
+	 * Describe the attachment's saved last operation, or null when there is none.
+	 *
+	 * @param int $attachment_id Attachment ID.
+	 * @return array|null
+	 */
+	private function last_operation_item( $attachment_id ) {
+		$last_op = $this->plugin->get_upload_handler()->get_attachment_operation_outcome( $attachment_id );
+
+		if ( ! is_array( $last_op ) || empty( $last_op['outcome'] ) ) {
+			return null;
+		}
+
+		$status_map = [
+			'complete'    => self::STATUS_OK,
+			'failed'      => self::STATUS_ERROR,
+			'interrupted' => self::STATUS_ERROR,
+			'partial'     => self::STATUS_WARNING,
+			'skipped'     => self::STATUS_WARNING,
+		];
+		$op_status = isset( $status_map[ $last_op['outcome'] ] ) ? $status_map[ $last_op['outcome'] ] : self::STATUS_INFO;
+		$op_msg    = ! empty( $last_op['message'] ) ? $last_op['message'] : $last_op['outcome'];
+
+		if ( ! empty( $last_op['context'] ) ) {
+			$op_msg = '[' . $last_op['context'] . '] ' . $op_msg;
+		}
+
+		if ( ! empty( $last_op['time'] ) ) {
+			$op_msg .= ' (' . date_i18n( get_option( 'date_format' ) . ' ' . get_option( 'time_format' ), (int) $last_op['time'] ) . ')';
+		}
+		$sizes = isset( $last_op['sizes'] ) && is_array( $last_op['sizes'] ) ? $last_op['sizes'] : [];
+		/* translators: 1: Processed size count. 2: Failed size count. 3: Skipped size count. */
+		$op_msg .= sprintf( __( ' Processed: %1$d; failed: %2$d; skipped: %3$d.', 'image-watermark' ), count( isset( $sizes['processed'] ) ? $sizes['processed'] : [] ), count( isset( $sizes['failed'] ) ? $sizes['failed'] : [] ), count( isset( $sizes['skipped'] ) ? $sizes['skipped'] : [] ) );
+		$operation_sizes = [];
+		$remaining_size_details = 20;
+		foreach ( [ 'processed', 'failed', 'skipped' ] as $size_status ) {
+			$values = isset( $sizes[ $size_status ] ) && is_array( $sizes[ $size_status ] ) ? $sizes[ $size_status ] : [];
+			$operation_sizes[ $size_status ] = array_slice( $values, 0, $remaining_size_details );
+			$remaining_size_details -= count( $operation_sizes[ $size_status ] );
+		}
+
+		$item = $this->item(
+			'last_op_' . ( ! empty( $last_op['code'] ) ? sanitize_key( $last_op['code'] ) : 'unknown' ),
+			$op_status,
+			__( 'Last operation', 'image-watermark' ),
+			$op_msg,
+			''
+		);
+		$item['operation'] = [
+			'outcome' => sanitize_key( $last_op['outcome'] ),
+			'code'    => ! empty( $last_op['code'] ) ? sanitize_key( $last_op['code'] ) : '',
+			'sizes'   => $operation_sizes,
+		];
+		return $item;
 	}
 
 	/**

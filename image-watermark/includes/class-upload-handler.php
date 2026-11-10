@@ -40,6 +40,34 @@ class Image_Watermark_Upload_Handler {
 	const CLIENT_SIDE_ORPHAN_REPORT_LIMIT = 20;
 
 	/**
+	 * Journal reservation limit (bytes) for a name-stable remove or
+	 * reapply, including room for its first retry. The reservation
+	 * bounds what the operation writes for generation results within the known
+	 * size names and measured widths, so it is admitted up to 8 KB under the
+	 * reader's 131,072-byte cap; results outside that envelope can still reach
+	 * the cap after live changes.
+	 */
+	const NAME_STABILITY_JOURNAL_BUDGET = 122880;
+
+	/** Upper bound (seconds) of one remove or reapply, from its lease acquisition. */
+	const OPERATION_TIME_LIMIT = 25;
+
+	/** Seconds kept back for restore, generation, and commit after ownership passes. */
+	const OPERATION_TIME_RESERVE = 5;
+
+	/** Attachment rows one derivative ownership pass may read. */
+	const OWNERSHIP_ROW_CEILING = 50000;
+
+	/** Inherited pre-operation tokens kept in a journal record. */
+	const PRE_OPERATION_TOKEN_LIMIT = 3;
+
+	/** Intermediate candidate paths one size may carry; never silently truncated. */
+	const PRE_OPERATION_CANDIDATE_LIMIT = 16;
+
+	/** Maximum retained upload paths and insertions before the residue check runs early. */
+	const UPLOAD_LEDGER_LIMIT = 200;
+
+	/**
 	 * Plugin instance.
 	 *
 	 * @var Image_Watermark
@@ -54,12 +82,58 @@ class Image_Watermark_Upload_Handler {
 	private $is_admin = true;
 
 	/**
-	 * Request-local uploads that are allowed to enter the automatic metadata
-	 * callback. Each item is consumed by its matching attachment only.
+	 * Request-local upload claims keyed by claim token. A claim is opened by the
+	 * priority-10 upload callback, sealed with the final file by its own
+	 * finalizer, and consumed by its matching attachment only. Unsealed claims
+	 * are never matched.
+	 *
+	 * @var array<string,array>
+	 */
+	private $pending_auto_uploads = [];
+
+	/**
+	 * Request-local wp_handle_upload brackets, innermost last. Each entry is
+	 * tagged with the filter depth of the invocation that pushed it.
 	 *
 	 * @var array[]
 	 */
-	private $pending_auto_uploads = [];
+	private $upload_brackets = [];
+
+	/**
+	 * Final paths of the most recent sealed uploads, eligible or not, bounded
+	 * by UPLOAD_LEDGER_LIMIT so unclaimed uploads are still recognized.
+	 *
+	 * @var array[]
+	 */
+	private $sealed_upload_paths = [];
+
+	/**
+	 * Attachments inserted in this request, with site and sequence number.
+	 *
+	 * @var array[]
+	 */
+	private $inserted_attachments = [];
+
+	/**
+	 * Request-local sequence that orders seals and attachment inserts.
+	 *
+	 * @var int
+	 */
+	private $upload_sequence = 0;
+
+	/**
+	 * Whether the shutdown residue check is registered.
+	 *
+	 * @var bool
+	 */
+	private $upload_residue_scheduled = false;
+
+	/**
+	 * Number of automatic watermark callbacks currently processing an upload.
+	 *
+	 * @var int
+	 */
+	private $upload_callback_depth = 0;
 
 	/**
 	 * Tracks if the missing font notice was added.
@@ -83,7 +157,7 @@ class Image_Watermark_Upload_Handler {
 	private $timestamp_preserve_notice_added = false;
 
 	/**
-	 * Request-local operation carrier. P00-10 consumes this primitive; it is not
+	 * Request-local internal operation carrier. It is not
 	 * persisted and cannot suppress a later request's ordinary upload callback.
 	 *
 	 * @var array|null
@@ -91,15 +165,15 @@ class Image_Watermark_Upload_Handler {
 	private $internal_operation_guard = null;
 
 	/**
-	 * The most recent private operation result for native consumers to adopt in
-	 * P00-11 without changing current success payloads.
+	 * The most recent private operation result for native consumers to adopt
+	 * without changing current success payloads.
 	 *
 	 * @var array
 	 */
 	private $last_operation_outcome = [];
 
 	/**
-	 * Test-only P00-09 fault seam. Production leaves it null, so it adds no
+	 * Test-only operation fault seam. Production leaves it null, so it adds no
 	 * runtime policy, filter, option, or public response behavior.
 	 *
 	 * @var callable|null
@@ -159,6 +233,15 @@ class Image_Watermark_Upload_Handler {
 	private $client_side_withheld_writes = [];
 
 	/**
+	 * Request-local observation of one guarded metadata generation: the main
+	 * file's MIME type for the scoped suppression filters and the size names core
+	 * was finally asked to create. Null outside that call.
+	 *
+	 * @var array|null
+	 */
+	private $guarded_generation = null;
+
+	/**
 	 * Upload handler constructor.
 	 *
 	 * @param Image_Watermark $plugin
@@ -173,6 +256,12 @@ class Image_Watermark_Upload_Handler {
 		add_filter( 'rest_request_after_callbacks', [ $this, 'end_client_side_media_request' ], 10, 3 );
 		add_action( 'rest_after_insert_attachment', [ $this, 'claim_client_side_upload' ], 10, 3 );
 		add_action( 'wp_scheduled_delete', [ $this, 'sweep_client_side_claims' ] );
+		// Internal upload bracketing around the priority-10 handle_upload_files()
+		// callback. They open no claim themselves, so removing that
+		// callback still disables automatic watermarking.
+		add_filter( 'wp_handle_upload', [ $this, 'enter_upload_bracket' ], PHP_INT_MIN );
+		add_filter( 'wp_handle_upload', [ $this, 'seal_upload_bracket' ], PHP_INT_MAX );
+		add_action( 'add_attachment', [ $this, 'observe_inserted_attachment' ] );
 		register_shutdown_function( [ $this, 'release_pending_attachment_deletion_fences' ] );
 	}
 
@@ -191,7 +280,7 @@ class Image_Watermark_Upload_Handler {
 	}
 
 	/**
-	 * P00-11 coordination seam: return the last structured operation result.
+	 * Return the last structured operation result.
 	 *
 	 * @return array
 	 */
@@ -341,13 +430,30 @@ class Image_Watermark_Upload_Handler {
 		$records = get_user_meta( $user_id, '_iw_auto_operation_notices', true );
 		$records = is_array( $records ) ? $records : [];
 		$now     = time();
+		$site_id = get_current_blog_id();
 		$keep    = [];
 		foreach ( $records as $record ) {
 			if ( ! is_array( $record ) || empty( $record['expires_at'] ) || (int) $record['expires_at'] < $now ) {
 				continue;
 			}
+			// Records without a site ID predate site scoping and keep their behavior.
+			$on_site = ! isset( $record['site_id'] ) || (int) $record['site_id'] === $site_id;
+			if ( isset( $record['scope'] ) && $record['scope'] === 'unattributed' ) {
+				if ( $on_site && isset( $record['site_id'] ) ) {
+					$files = isset( $record['files'] ) && is_array( $record['files'] ) ? array_slice( array_filter( $record['files'], 'is_string' ), 0, 5 ) : [];
+					// A record always names at least one file; a malformed one is dropped.
+					if ( $files ) {
+						/* translators: 1: Comma-separated uploaded file names. */
+						$message = sprintf( __( 'Automatic watermarking was skipped for %1$s: Image Watermark could not confirm which attachment the upload became. Check the image and apply the watermark manually if needed.', 'image-watermark' ), implode( ', ', $files ) );
+						echo '<div class="notice notice-warning is-dismissible"><p>' . esc_html( $message ) . '</p></div>';
+					}
+					continue;
+				}
+				$keep[] = $record;
+				continue;
+			}
 			$attachment_id = isset( $record['attachment_id'] ) ? (int) $record['attachment_id'] : 0;
-			if ( $attachment_id > 0 && current_user_can( 'edit_post', $attachment_id ) && ! empty( $record['message'] ) ) {
+			if ( $on_site && $attachment_id > 0 && current_user_can( 'edit_post', $attachment_id ) && ! empty( $record['message'] ) ) {
 				echo '<div class="notice notice-' . esc_attr( isset( $record['type'] ) ? $record['type'] : 'warning' ) . ' is-dismissible"><p>' . esc_html( $record['message'] ) . '</p></div>';
 				continue;
 			}
@@ -365,7 +471,7 @@ class Image_Watermark_Upload_Handler {
 	 * Install a test-only fault callback. The callback receives a stable boundary
 	 * name and context and returns true to stop at that boundary.
 	 *
-	 * @internal P00-01/P00-09 test seam.
+	 * @internal Test-only fault injection seam.
 	 * @param callable|null $injector Fault callback.
 	 * @return void
 	 */
@@ -381,8 +487,34 @@ class Image_Watermark_Upload_Handler {
 	 * @return array
 	 */
 	public function handle_upload_files( $file ) {
+		$token = null;
+		try {
+			$token = $this->open_upload_claim( $file );
+		} finally {
+			// Exactly one bracket entry on every return path, so the finalizer of
+			// this invocation always finds its own entry on top.
+			$this->upload_brackets[] = [
+				'depth'    => $this->current_filter_depth(),
+				'token'    => $token,
+				'site_id'  => get_current_blog_id(),
+				'basename' => is_array( $file ) && ! empty( $file['file'] ) && is_string( $file['file'] ) ? sanitize_file_name( wp_basename( $file['file'] ) ) : '',
+				'type'     => is_array( $file ) && isset( $file['type'] ) && is_string( $file['type'] ) ? $file['type'] : '',
+			];
+		}
+
+		return $file;
+	}
+
+	/**
+	 * Decide whether an upload may own an automatic watermark and open its
+	 * provisional, unsealed claim.
+	 *
+	 * @param mixed $file Upload result at priority 10.
+	 * @return string|null Claim token, or null when no claim was opened.
+	 */
+	private function open_upload_claim( $file ) {
 		if ( ! $this->ensure_image_engine() ) {
-			return $file;
+			return null;
 		}
 
 		$is_admin = $this->is_admin_upload_request();
@@ -390,7 +522,7 @@ class Image_Watermark_Upload_Handler {
 		$upload_context = isset( $_REQUEST['iw_watermark_upload'] ) && is_string( $_REQUEST['iw_watermark_upload'] ) ? sanitize_text_field( wp_unslash( $_REQUEST['iw_watermark_upload'] ) ) : '';
 
 		if ( $upload_context === '1' ) {
-			return $file;
+			return null;
 		}
 
 		$phase = $this->current_client_side_phase();
@@ -398,28 +530,328 @@ class Image_Watermark_Upload_Handler {
 		// Browser-generated derivatives are processed by the finalize request that
 		// registers them; a sideloaded file never owns an automatic callback.
 		if ( $phase !== null && $phase['phase'] === 'sideload' ) {
+			return null;
+		}
+
+		if ( ! is_array( $file ) || ! isset( $file['type'] ) || ! is_string( $file['type'] ) || ! empty( $file['error'] ) || ! $this->is_automatic_upload_enabled( $file['type'], $is_admin ) ) {
+			return null;
+		}
+
+		// Only the create request's own upload, at the filter depth recorded when
+		// its REST callback began, is deferred to finalize. A nested upload (for
+		// example from another upload filter) keeps the conventional path.
+		$depth = $this->current_filter_depth();
+		$client_side_request = $phase !== null && $phase['phase'] === 'create' && isset( $phase['filter_depth'] ) && $phase['filter_depth'] === $depth ? $phase['request'] : null;
+
+		$token = wp_generate_password( 20, false, false );
+		$this->pending_auto_uploads[ $token ] = [
+			'sealed'   => false,
+			'is_admin' => (bool) $is_admin,
+			'site_id'  => get_current_blog_id(),
+			'basename' => ! empty( $file['file'] ) && is_string( $file['file'] ) ? sanitize_file_name( wp_basename( $file['file'] ) ) : '',
+			'request'  => $client_side_request,
+		];
+
+		return $token;
+	}
+
+	/**
+	 * Number of hook invocations currently running, measured on the PHP call
+	 * stack. $wp_current_filter is not used: apply_filters() skips its
+	 * array_pop() when a callback throws, so after a caught exception that
+	 * count stays inflated for the rest of the request and a stale bracket
+	 * entry could share a later invocation's depth.
+	 *
+	 * @return int
+	 */
+	private function current_filter_depth() {
+		$depth = 0;
+		foreach ( debug_backtrace( DEBUG_BACKTRACE_IGNORE_ARGS ) as $frame ) {
+			if ( isset( $frame['class'], $frame['function'] ) && $frame['class'] === 'WP_Hook' && $frame['function'] === 'apply_filters' ) {
+				$depth++;
+			}
+		}
+
+		return $depth;
+	}
+
+	/**
+	 * Internal entry guard at PHP_INT_MIN on wp_handle_upload. Any bracket entry
+	 * at this invocation's depth or deeper is stale (left by a caught exception),
+	 * because a live enclosing invocation is always shallower.
+	 *
+	 * @param mixed $file Upload result.
+	 * @return mixed Unchanged upload result.
+	 */
+	public function enter_upload_bracket( $file ) {
+		$this->discard_upload_brackets( $this->current_filter_depth(), true );
+		return $file;
+	}
+
+	/**
+	 * Internal finalizer at PHP_INT_MAX on wp_handle_upload. Seals this
+	 * invocation's claim with the final file and type. It never changes $file.
+	 *
+	 * @param mixed $file Final upload result.
+	 * @return mixed Unchanged upload result.
+	 */
+	public function seal_upload_bracket( $file ) {
+		$depth = $this->current_filter_depth();
+		$this->discard_upload_brackets( $depth, false );
+		$usable = is_array( $file ) && empty( $file['error'] ) && ! empty( $file['file'] ) && is_string( $file['file'] ) && strpos( $file['file'], "\0" ) === false;
+		$raw = $usable ? wp_normalize_path( $file['file'] ) : '';
+		$identity = $usable ? $this->operation_path_identity( $file['file'], wp_upload_dir() ) : false;
+		$this->upload_sequence++;
+
+		// Keep recent sealed paths even when no claim opened, so their attachments
+		// are recognized without growing the ledger throughout a long import.
+		if ( $usable ) {
+			$this->sealed_upload_paths[] = [
+				'file'     => $raw,
+				'identity' => $identity === false ? null : $identity['identity'],
+				'site_id'  => get_current_blog_id(),
+				'sequence' => $this->upload_sequence,
+			];
+			$this->sealed_upload_paths = array_slice( $this->sealed_upload_paths, -self::UPLOAD_LEDGER_LIMIT );
+		}
+
+		$count = count( $this->upload_brackets );
+		// A shallower top entry belongs to an enclosing upload whose opening
+		// callback ran; this upload opened none (its callback was removed).
+		if ( $count === 0 || $this->upload_brackets[ $count - 1 ]['depth'] !== $depth ) {
 			return $file;
 		}
 
-		// Only the create request's own upload, which WordPress handles before any
-		// other upload in that callback, is deferred. A nested upload (for example
-		// from an add_attachment hook) keeps the conventional path.
-		$client_side_create = $phase !== null && $phase['phase'] === 'create' && empty( $phase['upload_seen'] );
-		if ( $client_side_create ) {
-			$this->client_side_phases[ count( $this->client_side_phases ) - 1 ]['upload_seen'] = true;
+		$entry = array_pop( $this->upload_brackets );
+		$token = $entry['token'];
+		if ( $token === null || ! isset( $this->pending_auto_uploads[ $token ] ) ) {
+			return $file;
 		}
-
-		if ( ! is_array( $file ) || ! isset( $file['type'] ) || ! $this->is_automatic_upload_enabled( $file['type'], $is_admin ) ) {
+		if ( ! $usable ) {
+			unset( $this->pending_auto_uploads[ $token ] );
 			return $file;
 		}
 
-		if ( $client_side_create ) {
-			$this->register_client_side_candidate( $file, $is_admin, $phase['request'] );
-		} else {
-			$this->register_pending_auto_upload( $file, $is_admin );
+		$claim = $this->pending_auto_uploads[ $token ];
+		$final_type = isset( $file['type'] ) && is_string( $file['type'] ) ? $file['type'] : '';
+		$claim['sealed'] = true;
+		$claim['file'] = $raw;
+		$claim['identity'] = $identity === false ? null : $identity['identity'];
+		$claim['type'] = $final_type;
+		$claim['code'] = in_array( $final_type, $this->plugin->get_allowed_mime_types(), true ) ? '' : 'upload_type_changed_unsupported';
+		$claim['sequence'] = $this->upload_sequence;
+
+		// The client-side create upload becomes the finalize candidate only when
+		// its final file is a supported, resolvable image; otherwise its outcome
+		// is attributed through the conventional metadata callback.
+		if ( $claim['request'] !== null && $claim['code'] === '' && $identity !== false ) {
+			unset( $this->pending_auto_uploads[ $token ] );
+			$this->client_side_candidates[] = [
+				'file'     => $identity['path'],
+				'is_admin' => $claim['is_admin'],
+				'request'  => $claim['request'],
+				'site_id'  => $claim['site_id'],
+				'basename' => $claim['basename'],
+				'sequence' => $claim['sequence'],
+			];
+			return $file;
+		}
+
+		$this->pending_auto_uploads[ $token ] = $claim;
+		add_filter( 'wp_generate_attachment_metadata', [ $this, 'apply_upload_watermark' ], 10, 2 );
+		if ( ! $this->upload_residue_scheduled ) {
+			$this->upload_residue_scheduled = true;
+			add_action( 'shutdown', [ $this, 'report_unattributed_upload_residue' ] );
 		}
 
 		return $file;
+	}
+
+	/**
+	 * Drop bracket entries at (inclusive) or below the given depth together with
+	 * their unsealed claims.
+	 *
+	 * @param int  $depth Filter depth.
+	 * @param bool $inclusive Whether entries at exactly this depth are stale.
+	 * @return void
+	 */
+	private function discard_upload_brackets( $depth, $inclusive ) {
+		while ( ! empty( $this->upload_brackets ) ) {
+			$top = $this->upload_brackets[ count( $this->upload_brackets ) - 1 ];
+			if ( $top['depth'] < $depth || ( ! $inclusive && $top['depth'] === $depth ) ) {
+				return;
+			}
+			array_pop( $this->upload_brackets );
+			if ( $top['token'] !== null && isset( $this->pending_auto_uploads[ $top['token'] ] ) && empty( $this->pending_auto_uploads[ $top['token'] ]['sealed'] ) ) {
+				unset( $this->pending_auto_uploads[ $top['token'] ] );
+			}
+		}
+	}
+
+	/**
+	 * Record each attachment inserted in this request for the residue check.
+	 * Only the ID and site are kept; paths are read when the check runs.
+	 *
+	 * @param int $attachment_id Attachment ID.
+	 * @return void
+	 */
+	public function observe_inserted_attachment( $attachment_id ) {
+		if ( empty( $this->client_side_candidates ) && ! $this->has_sealed_upload_claims() ) {
+			return;
+		}
+		$this->upload_sequence++;
+		$this->inserted_attachments[] = [
+			'id'       => (int) $attachment_id,
+			'site_id'  => get_current_blog_id(),
+			'sequence' => $this->upload_sequence,
+		];
+		if ( count( $this->inserted_attachments ) >= self::UPLOAD_LEDGER_LIMIT ) {
+			$this->trim_upload_ledger();
+		}
+	}
+
+	/**
+	 * Keep the ledger bounded in long-running processes. A claim that is never
+	 * consumed (for example an importer whose remote fetch failed after
+	 * wp_upload_bits()) would otherwise keep it growing: claims sealed more than
+	 * UPLOAD_LEDGER_LIMIT events ago are evaluated now, and entries older than
+	 * every remaining claim are dropped. The current upload's claim is recent,
+	 * so it is never evaluated before its own metadata callback.
+	 *
+	 * @return void
+	 */
+	private function trim_upload_ledger() {
+		$cutoff = $this->upload_sequence - self::UPLOAD_LEDGER_LIMIT;
+		$stale = [];
+		foreach ( $this->pending_auto_uploads as $token => $claim ) {
+			if ( ! empty( $claim['sealed'] ) && $claim['sequence'] < $cutoff ) {
+				$stale[] = $claim;
+				unset( $this->pending_auto_uploads[ $token ] );
+			}
+		}
+		$this->queue_unattributed_upload_notices( $stale );
+
+		$oldest = PHP_INT_MAX;
+		foreach ( array_merge( array_values( $this->pending_auto_uploads ), $this->client_side_candidates ) as $claim ) {
+			if ( isset( $claim['sequence'] ) ) {
+				$oldest = min( $oldest, (int) $claim['sequence'] );
+			}
+		}
+		$this->inserted_attachments = array_values( array_filter( $this->inserted_attachments, function( $inserted ) use ( $oldest ) {
+			return $inserted['sequence'] > $oldest;
+		} ) );
+		$this->sealed_upload_paths = array_values( array_filter( $this->sealed_upload_paths, function( $sealed ) use ( $cutoff ) {
+			return $sealed['sequence'] >= $cutoff;
+		} ) );
+		$this->prune_upload_ledger();
+	}
+
+	/**
+	 * Server residue check at shutdown: sealed eligible claims that no
+	 * attachment consumed.
+	 *
+	 * @return void
+	 */
+	public function report_unattributed_upload_residue() {
+		$claims = [];
+		foreach ( $this->pending_auto_uploads as $token => $claim ) {
+			if ( ! empty( $claim['sealed'] ) ) {
+				$claims[] = $claim;
+				unset( $this->pending_auto_uploads[ $token ] );
+			}
+		}
+		$this->queue_unattributed_upload_notices( $claims );
+	}
+
+	/**
+	 * Queue an unattributed notice for each site where an unconsumed sealed claim
+	 * is followed by an attachment inserted after its seal that consumed no
+	 * claim and matches no sealed upload path. No attachment record is written
+	 * and no ownership is inferred.
+	 *
+	 * @param array[] $claims Unconsumed sealed claims or client candidates.
+	 * @return void
+	 */
+	private function queue_unattributed_upload_notices( $claims ) {
+		$user_id = get_current_user_id();
+		if ( ! $user_id || empty( $claims ) ) {
+			return;
+		}
+
+		$files_by_site = [];
+		$upload_dir = null;
+		$matches = [];
+		foreach ( $claims as $claim ) {
+			$site_id = (int) $claim['site_id'];
+			foreach ( $this->inserted_attachments as $inserted ) {
+				// Paths are read on the current site only; a claim left on another
+				// site after switch_to_blog() is not evaluated. An attachment that
+				// consumed a claim always matches its own sealed path.
+				if ( $site_id !== get_current_blog_id() || $inserted['site_id'] !== $site_id || $inserted['sequence'] <= $claim['sequence'] ) {
+					continue;
+				}
+				$key = $site_id . ':' . $inserted['id'];
+				if ( ! isset( $matches[ $key ] ) ) {
+					if ( $upload_dir === null ) {
+						$upload_dir = wp_upload_dir();
+					}
+					$matches[ $key ] = $this->attachment_matches_sealed_upload( $inserted['id'], $site_id, $upload_dir );
+				}
+				if ( $matches[ $key ] ) {
+					continue;
+				}
+				$files_by_site[ $site_id ][] = $claim['basename'] !== '' ? $claim['basename'] : sanitize_file_name( wp_basename( $claim['file'] ) );
+				break;
+			}
+		}
+
+		foreach ( $files_by_site as $site_id => $files ) {
+			$files = array_slice( array_values( array_unique( array_filter( $files ) ) ), 0, 5 );
+			$records = get_user_meta( $user_id, '_iw_auto_operation_notices', true );
+			$records = is_array( $records ) ? $records : [];
+			$records[] = [
+				'scope'      => 'unattributed',
+				'site_id'    => (int) $site_id,
+				'code'       => 'upload_unattributed',
+				'files'      => array_map( function( $name ) {
+					return substr( sanitize_file_name( $name ), 0, 100 );
+				}, $files ),
+				'type'       => 'warning',
+				'created_at' => time(),
+				'expires_at' => time() + DAY_IN_SECONDS,
+			];
+			update_user_meta( $user_id, '_iw_auto_operation_notices', array_slice( $records, -20 ) );
+		}
+	}
+
+	/**
+	 * Whether an attachment's current files match any sealed upload path of this
+	 * request, by canonical identity, or by exact raw path when either side has
+	 * no identity.
+	 *
+	 * @return bool
+	 */
+	private function attachment_matches_sealed_upload( $attachment_id, $site_id, $upload_dir ) {
+		$data = wp_get_attachment_metadata( $attachment_id, true );
+		$paths = $this->attachment_upload_paths( $data, $attachment_id );
+		$attached = get_attached_file( $attachment_id );
+		$raw_original = is_string( $attached ) && $attached !== '' ? $this->raw_original_upload_path( $data, $attachment_id, wp_normalize_path( $attached ) ) : false;
+		if ( $raw_original !== false ) {
+			$paths[] = $raw_original;
+		}
+		foreach ( $paths as $path ) {
+			$identity = $this->operation_path_identity( $path, $upload_dir );
+			foreach ( $this->sealed_upload_paths as $sealed ) {
+				if ( $sealed['site_id'] !== $site_id ) {
+					continue;
+				}
+				if ( $identity !== false && $sealed['identity'] !== null ? $identity['identity'] === $sealed['identity'] : $this->paths_match( $sealed['file'], wp_normalize_path( $path ) ) ) {
+					return true;
+				}
+			}
+		}
+
+		return false;
 	}
 
 	/**
@@ -483,32 +915,11 @@ class Image_Watermark_Upload_Handler {
 	}
 
 	/**
-	 * Register a single upload file as the owner of one automatic metadata call.
-	 *
-	 * wp_handle_upload runs before WordPress creates the attachment. The absolute
-	 * uploaded file is therefore the only stable request-local identity available
-	 * until wp_generate_attachment_metadata supplies the attachment ID.
-	 *
-	 * @param array $file Upload result.
-	 * @param bool  $is_admin Whether this upload uses admin rules.
-	 * @return void
-	 */
-	private function register_pending_auto_upload( $file, $is_admin ) {
-		if ( empty( $file['file'] ) || ! is_string( $file['file'] ) ) {
-			return;
-		}
-
-		$this->pending_auto_uploads[] = [
-			'file'     => wp_normalize_path( $file['file'] ),
-			'is_admin' => (bool) $is_admin,
-		];
-		add_filter( 'wp_generate_attachment_metadata', [ $this, 'apply_upload_watermark' ], 10, 2 );
-	}
-
-	/**
-	 * Apply an automatic watermark only for the upload that registered this
-	 * callback. The claim is removed before processing so a failure, nested call,
-	 * or later regeneration cannot apply it again.
+	 * Apply an automatic watermark only for the upload whose sealed claim this
+	 * attachment matches. The claim is removed before processing so a failure,
+	 * nested call, or later regeneration cannot apply it again. A claim whose
+	 * final file is unsupported or unresolvable records a skipped outcome on the
+	 * matching attachment instead.
 	 *
 	 * @param array $data Attachment metadata.
 	 * @param int   $attachment_id Attachment ID.
@@ -519,34 +930,220 @@ class Image_Watermark_Upload_Handler {
 		if ( $this->get_internal_operation_guard( $attachment_id ) ) {
 			return $data;
 		}
-
-		$pending_index = $this->find_pending_auto_upload( $data, $attachment_id );
-		if ( $pending_index === false ) {
+		if ( ! $this->has_sealed_upload_claims() ) {
+			// Left registered only because removing it earlier was unsafe.
+			$this->retire_upload_callback();
 			return $data;
 		}
 
-		$pending = $this->pending_auto_uploads[ $pending_index ];
-		unset( $this->pending_auto_uploads[ $pending_index ] );
-		$this->pending_auto_uploads = array_values( $this->pending_auto_uploads );
+		$match = $this->find_pending_auto_upload( $data, $attachment_id );
+		if ( $match === false ) {
+			return $data;
+		}
+
+		$pending = $this->pending_auto_uploads[ $match['token'] ];
+		unset( $this->pending_auto_uploads[ $match['token'] ] );
 		$previous_is_admin = $this->is_admin;
 		$this->is_admin = $pending['is_admin'];
+		$this->upload_callback_depth++;
+		$aborted = false;
 
 		try {
+			if ( $pending['code'] === 'upload_type_changed_unsupported' ) {
+				$this->persist_terminal_outcome( $attachment_id, 'apply', 'auto-apply', 'skipped', $pending['code'], __( 'Automatic watermarking was skipped because another plugin changed the upload to a file type Image Watermark does not support.', 'image-watermark' ) );
+				return $data;
+			}
+			// A client-side create upload is deferred to finalize only with a
+			// canonical identity, and is never watermarked on this create pass.
+			if ( $match['raw'] && ( $pending['request'] !== null || ! $this->is_resolvable_upload_file( get_attached_file( $attachment_id ) ) ) ) {
+				$this->persist_terminal_outcome( $attachment_id, 'apply', 'auto-apply', 'skipped', 'upload_path_unresolved', __( 'Automatic watermarking was skipped because Image Watermark could not resolve the uploaded file inside the uploads folder.', 'image-watermark' ) );
+				return $data;
+			}
 			return $this->apply_watermark( $data, $attachment_id );
+		} catch ( \Throwable $error ) {
+			// The dispatch is aborting, so no later group of it can run; remove
+			// the callback now rather than leave it for a later dispatch.
+			$aborted = true;
+			throw $error;
 		} finally {
 			$this->is_admin = $previous_is_admin;
-			if ( empty( $this->pending_auto_uploads ) ) {
+			$this->upload_callback_depth--;
+			if ( $aborted && $this->upload_callback_depth === 0 && ! $this->has_sealed_upload_claims() ) {
 				remove_filter( 'wp_generate_attachment_metadata', [ $this, 'apply_upload_watermark' ], 10 );
+				remove_filter( 'wp_generate_attachment_metadata', [ $this, 'retire_deferred_upload_callback' ], PHP_INT_MAX );
+			} else {
+				$this->retire_upload_callback();
 			}
+			$this->prune_upload_ledger();
 		}
 	}
 
 	/**
-	 * Find the pending upload record belonging to an attachment metadata callback.
+	 * Remove the automatic watermark callback once no sealed claim remains,
+	 * without making WordPress skip other metadata callbacks. Removing the last
+	 * callback of the running priority 10 makes WP_Hook re-sort the iteration;
+	 * when a lower priority remains, the re-sort lands on the next priority
+	 * group and the loop then steps past it, so that group never runs. Only
+	 * when a lower and a higher priority both exist is the removal moved to the
+	 * end of the same dispatch (priority PHP_INT_MAX), where removing priority
+	 * 10 leaves the running position intact.
+	 *
+	 * @return void
+	 */
+	private function retire_upload_callback() {
+		// While an outer automatic callback still processes an upload, its own
+		// retirement decides; an inner dispatch never removes it.
+		if ( $this->upload_callback_depth > 0 || $this->has_sealed_upload_claims() ) {
+			return;
+		}
+		if ( ! $this->can_remove_upload_callback_now() ) {
+			add_filter( 'wp_generate_attachment_metadata', [ $this, 'retire_deferred_upload_callback' ], PHP_INT_MAX );
+			return;
+		}
+		remove_filter( 'wp_generate_attachment_metadata', [ $this, 'apply_upload_watermark' ], 10 );
+	}
+
+	/**
+	 * Whether removing the automatic callback now leaves every running
+	 * iteration of the metadata filter intact: the filter is idle, another
+	 * callback keeps priority 10 occupied, or priority 10 is not between two
+	 * registered priorities (with no lower one WP_Hook keeps the position; with
+	 * no higher one there is no group left to skip).
+	 *
+	 * @return bool
+	 */
+	private function can_remove_upload_callback_now() {
+		global $wp_filter;
+		if ( ! doing_filter( 'wp_generate_attachment_metadata' ) || ! isset( $wp_filter['wp_generate_attachment_metadata'] ) || ! $wp_filter['wp_generate_attachment_metadata'] instanceof WP_Hook || has_filter( 'wp_generate_attachment_metadata', [ $this, 'apply_upload_watermark' ] ) !== 10 ) {
+			return true;
+		}
+		$callbacks = $wp_filter['wp_generate_attachment_metadata']->callbacks;
+		if ( isset( $callbacks[10] ) && count( $callbacks[10] ) > 1 ) {
+			return true;
+		}
+		$lower = false;
+		$higher = false;
+		foreach ( array_keys( $callbacks ) as $priority ) {
+			$lower = $lower || $priority < 10;
+			$higher = $higher || $priority > 10;
+		}
+
+		return ! ( $lower && $higher );
+	}
+
+	/**
+	 * Deferred removal of the automatic callback (see retire_upload_callback()),
+	 * at the end of the metadata dispatch. No running iteration is then at the
+	 * automatic callback, unless it is still processing an upload; a later
+	 * evaluation retires it in that case. Removing this callback from the last
+	 * priority cannot skip a later group.
+	 *
+	 * @param array $data Attachment metadata.
+	 * @return array Unchanged metadata.
+	 */
+	public function retire_deferred_upload_callback( $data ) {
+		if ( $this->upload_callback_depth > 0 ) {
+			return $data;
+		}
+		if ( ! $this->has_sealed_upload_claims() ) {
+			remove_filter( 'wp_generate_attachment_metadata', [ $this, 'apply_upload_watermark' ], 10 );
+		}
+		remove_filter( 'wp_generate_attachment_metadata', [ $this, 'retire_deferred_upload_callback' ], PHP_INT_MAX );
+		return $data;
+	}
+
+	/**
+	 * Raw form of the untouched original upload of a scaled or rotated main
+	 * file. It carries only the trust of the raw attached-file match, plus the
+	 * canonical original_image rules of attachment_upload_paths(): the attached
+	 * file matches the metadata file (including its basename), original_image
+	 * is a bare basename, the -scaled/-rotated stem rule holds against the
+	 * metadata file, and the directory is the attached file's own. It matters
+	 * only where paths cannot be canonicalized, such as a stream-wrapper
+	 * uploads directory.
+	 *
+	 * @param mixed  $data Attachment metadata.
+	 * @param int    $attachment_id Attachment ID.
+	 * @param string $attached Normalized raw attached file.
+	 * @return string|false
+	 */
+	private function raw_original_upload_path( $data, $attachment_id, $attached ) {
+		if ( $attached === '' || ! is_array( $data ) || empty( $data['file'] ) || ! is_string( $data['file'] ) || empty( $data['original_image'] ) || ! is_string( $data['original_image'] ) ) {
+			return false;
+		}
+		$relative = get_post_meta( $attachment_id, '_wp_attached_file', true );
+		if ( ! is_string( $relative ) || $relative === '' || ! $this->paths_match( wp_normalize_path( $relative ), wp_normalize_path( $data['file'] ) ) ) {
+			return false;
+		}
+		$original = $data['original_image'];
+		if ( basename( $original ) !== $original || strpos( $original, '..' ) !== false || strpos( $original, ':' ) !== false || strpos( $original, "\0" ) !== false ) {
+			return false;
+		}
+		$metadata_file = basename( wp_normalize_path( $data['file'] ) );
+		if ( ! $this->paths_match( basename( $attached ), $metadata_file ) ) {
+			return false;
+		}
+		$original_stem = strtolower( pathinfo( $original, PATHINFO_FILENAME ) );
+		$file_stem = strtolower( pathinfo( $metadata_file, PATHINFO_FILENAME ) );
+		if ( $original_stem === '' || ! preg_match( '/^' . preg_quote( $original_stem, '/' ) . '-(?:scaled|rotated|scaled-rotated)$/', $file_stem ) ) {
+			return false;
+		}
+
+		return dirname( $attached ) . '/' . $original;
+	}
+
+	/** @return bool Whether a sealed claim still waits for its attachment. */
+	private function has_sealed_upload_claims() {
+		foreach ( $this->pending_auto_uploads as $claim ) {
+			if ( ! empty( $claim['sealed'] ) ) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+
+	/**
+	 * With no sealed claim or client candidate left, no earlier insert can ever
+	 * meet the residue trigger, so long-running processes do not accumulate the
+	 * ledger. Sealed paths are cleared too; that can only add a notice when an
+	 * upload's attachment is inserted after a later claim was sealed and left
+	 * unconsumed, with a full prune in between.
+	 *
+	 * @return void
+	 */
+	private function prune_upload_ledger() {
+		if ( empty( $this->client_side_candidates ) && ! $this->has_sealed_upload_claims() ) {
+			$this->inserted_attachments = [];
+			$this->sealed_upload_paths = [];
+		}
+	}
+
+	/**
+	 * A raw-matched attachment file must exist under the uploads base directory.
+	 *
+	 * @param mixed $path Attached file path.
+	 * @return bool
+	 */
+	private function is_resolvable_upload_file( $path ) {
+		if ( ! is_string( $path ) || $path === '' || strpos( $path, "\0" ) !== false || ! is_file( $path ) ) {
+			return false;
+		}
+		$upload_dir = wp_upload_dir();
+		$base = rtrim( wp_normalize_path( $upload_dir['basedir'] ), '/' ) . '/';
+		$path = wp_normalize_path( $path );
+
+		return DIRECTORY_SEPARATOR === '\\' ? stripos( $path, $base ) === 0 : strpos( $path, $base ) === 0;
+	}
+
+	/**
+	 * Find the sealed claim belonging to an attachment metadata callback. A claim
+	 * with a canonical identity matches any canonical attachment candidate; a
+	 * claim without one matches only the raw attached file exactly.
 	 *
 	 * @param array $data Attachment metadata.
 	 * @param int   $attachment_id Attachment ID.
-	 * @return int|false
+	 * @return array{token:string,raw:bool}|false
 	 */
 	private function find_pending_auto_upload( $data, $attachment_id ) {
 		$paths = $this->attachment_upload_paths( $data, $attachment_id );
@@ -554,15 +1151,29 @@ class Image_Watermark_Upload_Handler {
 		if ( empty( $paths ) ) {
 			return false;
 		}
-		foreach ( $this->pending_auto_uploads as $index => $pending ) {
-			if ( ! isset( $pending['file'] ) || ! is_string( $pending['file'] ) ) {
+		$upload_dir = wp_upload_dir();
+		$identities = [];
+		foreach ( $paths as $candidate ) {
+			$identity = $this->operation_path_identity( $candidate, $upload_dir );
+			if ( $identity !== false ) {
+				$identities[] = $identity['identity'];
+			}
+		}
+		$attached = get_attached_file( $attachment_id );
+		$attached = is_string( $attached ) && $attached !== '' ? wp_normalize_path( $attached ) : '';
+		$raw_original = $this->raw_original_upload_path( $data, $attachment_id, $attached );
+		$site_id = get_current_blog_id();
+
+		foreach ( $this->pending_auto_uploads as $token => $pending ) {
+			if ( empty( $pending['sealed'] ) || $pending['site_id'] !== $site_id ) {
 				continue;
 			}
-
-			foreach ( $paths as $candidate ) {
-				if ( $this->paths_match( $pending['file'], $candidate ) ) {
-					return $index;
+			if ( $pending['identity'] !== null ) {
+				if ( in_array( $pending['identity'], $identities, true ) ) {
+					return [ 'token' => $token, 'raw' => false ];
 				}
+			} elseif ( $attached !== '' && ( $this->paths_match( $pending['file'], $attached ) || ( $raw_original !== false && $this->paths_match( $pending['file'], $raw_original ) ) ) ) {
+				return [ 'token' => $token, 'raw' => true ];
 			}
 		}
 
@@ -668,6 +1279,9 @@ class Image_Watermark_Upload_Handler {
 
 		$phase['dispatched'] = false;
 		$phase['withheld'] = null;
+		// The REST callback runs outside any filter, so the create request's own
+		// upload runs wp_handle_upload at exactly this depth.
+		$phase['filter_depth'] = $this->current_filter_depth();
 		if ( $phase['phase'] === 'sideload' ) {
 			// A 'scaled' or 'original' sideload replaces the attached file; the
 			// after-callback extends the claim's ownership chain to the new file.
@@ -759,9 +1373,17 @@ class Image_Watermark_Upload_Handler {
 			}
 		} finally {
 			if ( $phase['phase'] === 'create' ) {
-				$this->client_side_candidates = array_values( array_filter( $this->client_side_candidates, function( $candidate ) use ( $phase ) {
-					return ! isset( $candidate['request'] ) || $candidate['request'] !== $phase['request'];
+				$unconsumed = [];
+				$this->client_side_candidates = array_values( array_filter( $this->client_side_candidates, function( $candidate ) use ( $phase, &$unconsumed ) {
+					if ( isset( $candidate['request'] ) && $candidate['request'] === $phase['request'] ) {
+						$unconsumed[] = $candidate;
+						return false;
+					}
+					return true;
 				} ) );
+				// Client-side residue is evaluated here, before the candidates are gone.
+				$this->queue_unattributed_upload_notices( $unconsumed );
+				$this->prune_upload_ledger();
 			}
 			if ( $phase['phase'] === 'finalize' ) {
 				unset( $this->client_side_finalize[ $this->client_side_request_key( $phase['request'] ) ] );
@@ -1233,24 +1855,6 @@ class Image_Watermark_Upload_Handler {
 			'attachment_id' => (int) $phase['attachment_id'],
 			'input'         => $fingerprint,
 			'final'         => '',
-		];
-	}
-
-	/**
-	 * @param array $file Upload result.
-	 * @param bool  $is_admin Whether this upload uses admin rules.
-	 * @return void
-	 */
-	private function register_client_side_candidate( $file, $is_admin, $request ) {
-		$identity = empty( $file['file'] ) || ! is_string( $file['file'] ) ? false : $this->operation_path_identity( $file['file'], wp_upload_dir() );
-		if ( $identity === false ) {
-			return;
-		}
-
-		$this->client_side_candidates[] = [
-			'file'     => $identity['path'],
-			'is_admin' => (bool) $is_admin,
-			'request'  => $request,
 		];
 	}
 
@@ -2118,6 +2722,7 @@ class Image_Watermark_Upload_Handler {
 		$records = is_array( $records ) ? $records : [];
 		$records[] = [
 			'attachment_id' => (int) $attachment_id,
+			'site_id'       => get_current_blog_id(),
 			'code'          => sanitize_key( $result['code'] ),
 			'message'       => $this->sanitize_operation_message( $result['message'] ),
 			'type'          => $result['outcome'] === 'failed' ? 'error' : 'warning',
@@ -2399,7 +3004,7 @@ class Image_Watermark_Upload_Handler {
 
 	/**
 	 * Build a private, structured operation result. This deliberately remains out
-	 * of existing successful AJAX payloads until P00-11 coordinates consumers.
+	 * of existing successful AJAX payloads; native consumers read it separately.
 	 *
 	 * @param string $outcome Terminal outcome.
 	 * @param string $token Operation token.
@@ -2484,6 +3089,11 @@ class Image_Watermark_Upload_Handler {
 			return [ 'version' => 1, 'current' => null, 'recoverable_predecessor' => null, 'history' => [] ];
 		}
 
+		return $this->is_valid_operation_journal( $journal ) ? $journal : false;
+	}
+
+	/** @return bool Whether read_operation_journal() accepts this stored value. */
+	private function is_valid_operation_journal( $journal ) {
 		if ( strlen( maybe_serialize( $journal ) ) > 131072 || ! is_array( $journal ) || ! isset( $journal['version'] ) || (int) $journal['version'] !== 1 || ! array_key_exists( 'current', $journal ) || ! isset( $journal['history'] ) || ! is_array( $journal['history'] ) || count( $journal['history'] ) > 2 || ! $this->is_valid_operation_record( $journal['current'] ) || ( ! empty( $journal['recoverable_predecessor'] ) && ! $this->is_valid_operation_record( $journal['recoverable_predecessor'] ) ) ) {
 			return false;
 		}
@@ -2493,7 +3103,7 @@ class Image_Watermark_Upload_Handler {
 			}
 		}
 
-		return $journal;
+		return true;
 	}
 
 	/** @return bool */
@@ -2592,6 +3202,12 @@ class Image_Watermark_Upload_Handler {
 					}
 				}
 			}
+			if ( isset( $record['derivative_recovery']['remap'] ) && ! $this->is_valid_name_stable_remap( $record['derivative_recovery']['remap'] ) ) {
+				return false;
+			}
+		}
+		if ( isset( $record['pre_operation'] ) && ! $this->is_valid_pre_operation( $record['pre_operation'] ) ) {
+			return false;
 		}
 		return true;
 	}
@@ -2609,7 +3225,9 @@ class Image_Watermark_Upload_Handler {
 	 * @return bool
 	 */
 	private function write_operation_journal( $attachment_id, $journal ) {
-		if ( count( (array) $journal['history'] ) > 2 || strlen( maybe_serialize( $journal ) ) > 131072 ) {
+		// A journal the reader would reject is never stored: it would block every
+		// later operation on the attachment. The stored record stays as it was.
+		if ( ! $this->is_valid_operation_journal( $journal ) ) {
 			return false;
 		}
 		if ( $this->should_inject_operation_fault( 'journal_write', [ 'attachment_id' => $attachment_id, 'state' => isset( $journal['current']['state'] ) ? $journal['current']['state'] : '' ] ) ) {
@@ -2664,7 +3282,7 @@ class Image_Watermark_Upload_Handler {
 		}
 
 		global $wpdb;
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- Exact-value compare-and-delete is the P00-08 lock ownership fence; core APIs cannot provide this atomic operation.
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- Exact-value compare-and-delete is the operation lock ownership fence; core APIs cannot provide this atomic operation.
 		$deleted = $wpdb->query( $wpdb->prepare(
 			"DELETE FROM {$wpdb->options} WHERE option_name = %s AND option_value = %s",
 			$name,
@@ -2690,7 +3308,7 @@ class Image_Watermark_Upload_Handler {
 		// the exact prior lease was lost.
 		$new_lock['heartbeat_at'] = max( time(), (int) $old_lock['heartbeat_at'] + 1 );
 		$name = $this->operation_lock_name( $operation['attachment_id'] );
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- Exact-value compare-and-swap is the P00-08 lock ownership fence; core APIs cannot provide this atomic operation.
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- Exact-value compare-and-swap is the operation lock ownership fence; core APIs cannot provide this atomic operation.
 		$updated = $wpdb->query( $wpdb->prepare(
 			"UPDATE {$wpdb->options} SET option_value = %s WHERE option_name = %s AND option_value = %s",
 			maybe_serialize( $new_lock ),
@@ -2716,7 +3334,7 @@ class Image_Watermark_Upload_Handler {
 		}
 		global $wpdb;
 		$name = $this->operation_lock_name( $operation['attachment_id'] );
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- Exact-value compare-and-delete is the P00-08 lock release fence; core APIs cannot provide this atomic operation.
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery -- Exact-value compare-and-delete is the operation lock release fence; core APIs cannot provide this atomic operation.
 		$deleted = $wpdb->query( $wpdb->prepare(
 			"DELETE FROM {$wpdb->options} WHERE option_name = %s AND option_value = %s",
 			$name,
@@ -2891,30 +3509,47 @@ class Image_Watermark_Upload_Handler {
 	/** @return array */
 	private function persist_terminal_outcome( $attachment_id, $type, $context, $state, $code, $message, $last_status = 'skipped' ) {
 		$token = $this->operation_token();
-		$lock = $this->acquire_operation_lock( $attachment_id, $token );
-		if ( $lock === false ) {
-			return $this->operation_result( 'failed', '', 'busy', __( 'Another watermark operation is already in progress. Please retry shortly.', 'image-watermark' ), true );
-		}
-		$operation = [ 'attachment_id' => $attachment_id, 'token' => $token, 'lock' => $lock ];
+		$operation = null;
+		$result = null;
 		try {
-			if ( ! $this->begin_operation( $operation, $type, $context, [] ) || ! $this->set_operation_state( $operation, $state, [ 'code' => $code, 'counts' => [ 'processed' => 0, 'failed' => 0 ] ] ) ) {
-				return $this->operation_result( 'interrupted', $token, 'journal_write_failed', $message, true );
+			$lock = $this->acquire_operation_lock( $attachment_id, $token );
+			if ( $lock === false ) {
+				$result = $this->operation_result( 'failed', '', 'busy', __( 'Another watermark operation is already in progress. Please retry shortly.', 'image-watermark' ), true );
+				return $result;
+			}
+			$operation = [ 'attachment_id' => $attachment_id, 'token' => $token, 'lock' => $lock ];
+			if ( ! $this->begin_operation( $operation, $type, $context, [] ) ) {
+				$result = isset( $operation['begin_error_code'] ) ? $this->begin_failure_result( $operation, $token ) : $this->operation_result( 'interrupted', $token, 'journal_write_failed', $message, true );
+				return $result;
+			}
+			if ( ! $this->set_operation_state( $operation, $state, [ 'code' => $code, 'counts' => [ 'processed' => 0, 'failed' => 0 ] ] ) ) {
+				$result = $this->operation_result( 'interrupted', $token, 'journal_write_failed', $message, true );
+				return $result;
 			}
 			$sizes = [ 'processed' => [], 'skipped' => $state === 'skipped' ? [ [ 'name' => 'all', 'code' => $code ] ] : [], 'failed' => $state === 'failed' ? [ [ 'name' => 'all', 'code' => $code ] ] : [] ];
 			$this->record_last_operation( $attachment_id, $last_status, $code, $message, $context, [], $sizes['failed'], $sizes['skipped'], $state );
 			$result = $this->operation_result( $state, $token, $code, $message, false, $sizes );
-			if ( $context === 'auto-apply' && in_array( $state, [ 'failed', 'partial', 'interrupted' ], true ) ) {
-				$this->queue_auto_operation_notice( $attachment_id, $result );
-			}
 			return $result;
 		} finally {
-			$this->release_operation_lock( $operation );
+			if ( $operation !== null ) {
+				$this->release_operation_lock( $operation );
+			}
+			// Every caller gets the same notice guarantee, including callers that
+			// intentionally ignore the result while continuing an automatic upload.
+			if ( $context === 'auto-apply' && is_array( $result ) && ( in_array( $result['outcome'], [ 'failed', 'partial', 'interrupted' ], true ) || in_array( $result['code'], [ 'upload_type_changed_unsupported', 'upload_path_unresolved' ], true ) ) ) {
+				$this->queue_auto_operation_notice( $attachment_id, $result );
+			}
 		}
 	}
 
 	/** @return array */
 	private function early_operation_failure( $data, $attachment_id, $type, $context, $method, $code, $message, $last_status = 'error' ) {
 		$result = $this->persist_terminal_outcome( $attachment_id, $type, $context, 'failed', $code, $message, $last_status );
+		// The persistence boundary already queued an automatic notice. A manual
+		// caller must receive the actual persistence failure rather than the skip.
+		if ( $result['code'] !== sanitize_key( $code ) ) {
+			return $method === 'manual' ? [ 'error' => $result['message'], 'outcome' => $result ] : $data;
+		}
 		return $method === 'manual' ? [ 'error' => $message, 'outcome' => $result ] : $data;
 	}
 
@@ -2929,7 +3564,7 @@ class Image_Watermark_Upload_Handler {
 	 */
 	public function apply_watermark( $data, $attachment_id, $method = '' ) {
 		$attachment_id = (int) $attachment_id;
-		// P00-10 consumer seam: only the matching request-local internal
+		// Only the matching request-local internal
 		// operation bypasses the automatic metadata callback. A guard for another
 		// attachment remains invisible here and cannot leak into this operation.
 		if ( $this->get_internal_operation_guard( $attachment_id ) ) {
@@ -3061,13 +3696,12 @@ class Image_Watermark_Upload_Handler {
 				}
 
 			return $this->execute_staged_apply( $data, $attachment_id, $method, $context, $options, $upload_dir, $target_files, $metadata );
-		} elseif ( $method === 'manual' ) {
-			// getimagesize() failed: the file is missing, corrupt, or not a supported image.
-			$read_error = __( 'The image file could not be read. It may be corrupt or in an unsupported format.', 'image-watermark' );
-			return $this->early_operation_failure( $data, $attachment_id, 'apply', $context, $method, 'image_unreadable', $read_error );
 		}
 
-		return $data;
+		// getimagesize() failed: the file is corrupt or not a supported image. An
+		// automatic upload records the skip too, so it is never silent.
+		$read_error = __( 'The image file could not be read. It may be corrupt or in an unsupported format.', 'image-watermark' );
+		return $this->early_operation_failure( $data, $attachment_id, 'apply', $context, $method, 'image_unreadable', $read_error, $method === 'manual' ? 'error' : 'skipped' );
 	}
 
 	/**
@@ -3077,18 +3711,21 @@ class Image_Watermark_Upload_Handler {
 	 * @return array
 	 */
 	private function execute_staged_apply( $data, $attachment_id, $method, $context, $options, $upload_dir, $target_files, $metadata ) {
+		// Path validation needs no lease. Rejecting before the lease is taken lets
+		// the failure be recorded: without a journal, a terminal state cannot be.
+		$groups = $this->operation_target_groups( $target_files, $upload_dir );
+		if ( $groups === false ) {
+			return $this->early_operation_failure( $data, $attachment_id, 'apply', $context, $method, 'invalid_targets', __( 'Selected image paths could not be safely prepared.', 'image-watermark' ) );
+		}
+
 		$token = $this->operation_token();
 		$lock = $this->acquire_operation_lock( $attachment_id, $token );
 		if ( $lock === false ) {
 			return $this->operation_failure( $data, $method, $attachment_id, $context, $this->operation_result( 'failed', '', 'busy', __( 'Another watermark operation is already in progress. Please retry shortly.', 'image-watermark' ), true ) );
 		}
 
-		$operation = [ 'attachment_id' => $attachment_id, 'token' => $token, 'lock' => $lock ];
+		$operation = [ 'attachment_id' => $attachment_id, 'token' => $token, 'lock' => $lock, 'time_origin' => microtime( true ) ];
 		try {
-			$groups = $this->operation_target_groups( $target_files, $upload_dir );
-			if ( $groups === false ) {
-				return $this->operation_terminal_failure( $operation, $data, $method, $context, 'failed', 'invalid_targets', __( 'Selected image paths could not be safely prepared.', 'image-watermark' ) );
-			}
 			$recovery = $this->reconcile_predecessor( $operation, $data, $upload_dir, $context );
 			if ( $recovery === 'complete' ) {
 				return $data;
@@ -3097,7 +3734,7 @@ class Image_Watermark_Upload_Handler {
 				return $this->operation_failure( $data, $method, $attachment_id, $context, $this->operation_result( 'failed', $token, 'predecessor_uncertain', __( 'The interrupted watermark operation cannot prove that every live target is clean. No image was overwritten.', 'image-watermark' ), true ) );
 			}
 			if ( ! $this->begin_operation( $operation, 'apply', $context, $groups ) ) {
-				return $this->operation_failure( $data, $method, $attachment_id, $context, $this->operation_result( 'failed', $token, 'journal_invalid', __( 'Watermark recovery state could not be safely recorded.', 'image-watermark' ), true ) );
+				return $this->operation_failure( $data, $method, $attachment_id, $context, $this->begin_failure_result( $operation, $token ) );
 			}
 			$recovered_temporary_sources = false;
 			if ( $recovery === 'temporary-recovery' ) {
@@ -3127,8 +3764,8 @@ class Image_Watermark_Upload_Handler {
 				return $this->operation_terminal_skip( $operation, $data, $context, 'already_watermarked', __( 'Automatic watermarking was skipped because the image is already watermarked.', 'image-watermark' ) );
 			}
 			$previous_derivatives = [];
+			$plan = null;
 			if ( $reapply ) {
-				$previous_derivatives = array_merge( $this->recoverable_derivative_paths( $operation, $upload_dir ), $this->snapshot_registered_derivatives( $data, $original_file, $upload_dir ) );
 				if ( ! $this->watermark_source_is_available( $options, $upload_dir ) ) {
 					return $this->operation_terminal_failure( $operation, $data, $method, $context, 'failed', 'watermark_source_missing', __( 'Watermark not applied: the watermark source image file is missing from the server. Please re-select a watermark image in settings.', 'image-watermark' ) );
 				}
@@ -3140,15 +3777,34 @@ class Image_Watermark_Upload_Handler {
 				if ( $backup === false || ! $this->is_valid_backup_file( $backup ) ) {
 					return $this->operation_terminal_failure( $operation, $data, $method, $context, 'failed', 'backup_missing', __( 'Watermark not applied because the original backup is missing.', 'image-watermark' ) );
 				}
+				$operation['target_limit'] = count( array_filter( isset( $options['watermark_on'] ) && is_array( $options['watermark_on'] ) ? $options['watermark_on'] : [], static function( $active ) {
+					return (int) $active === 1;
+				} ) );
+				$prepared = $this->prepare_name_stable_operation( $operation, $data, $original_file, $upload_dir, $backup );
+				if ( $prepared !== true ) {
+					return $this->operation_terminal_failure( $operation, $data, $method, $context, 'failed', $prepared['code'], $prepared['message'], $prepared['code'] !== 'journal_budget_exceeded' );
+				}
+				$pre = $operation['pre_operation'];
+				foreach ( $pre['sizes'] as $name => $size ) {
+					$previous_derivatives[ $name ] = $size['path'];
+				}
 				if ( ! $this->stage_copy_and_promote( $operation, $backup, $original_file, 'restore-source', [] ) ) {
 					return $this->operation_terminal_failure( $operation, $data, $method, $context, 'partial', 'restore_failed', __( 'The clean backup could not be safely restored for reapplication.', 'image-watermark' ), true );
 				}
-				$data = $this->generate_metadata_under_operation( $operation, $attachment_id, $original_file, 'reapply', $previous_derivatives, isset( $data['original_image'] ) ? $data['original_image'] : '' );
+				$data = $this->generate_metadata_under_operation( $operation, $attachment_id, $original_file, 'reapply', $previous_derivatives, $pre['original_image'] );
 				if ( ! is_array( $data ) || empty( $data['file'] ) ) {
 					return $this->operation_terminal_failure( $operation, $data, $method, $context, 'partial', 'metadata_regeneration_failed', __( 'Image metadata could not be regenerated after restoring the clean source.', 'image-watermark' ), true, [], array_merge( [ 'full' ], array_keys( $previous_derivatives ) ) );
 				}
-				$target_files = $this->get_target_image_paths( $options, $data, $original_file, $upload_dir );
-				$groups = $this->operation_target_groups( $target_files, $upload_dir );
+				if ( $this->name_stable_identity_changed( $attachment_id, $data, $pre ) ) {
+					$rollback = $this->rollback_name_stable_identity( $operation, $data, $upload_dir, $backup, [] );
+					return $this->operation_terminal_failure( $operation, $data, $method, $context, 'partial', $rollback['committed'] ? 'main_identity_changed' : 'metadata_commit_failed', $this->name_stable_partial_message( 'main_identity_changed', 'reapply' ), true );
+				}
+				if ( $this->should_inject_operation_fault( 'after_identity_check', [ 'attachment_id' => $attachment_id, 'token' => $token ] ) ) {
+					return $this->operation_terminal_failure( $operation, $data, $method, $context, 'partial', 'metadata_regeneration_failed', __( 'Image metadata could not be regenerated after restoring the clean source.', 'image-watermark' ), true );
+				}
+				$plan = $this->plan_name_stable_derivatives( $operation, $data, $upload_dir, 'reapply', $options, true );
+				$data = $plan['metadata'];
+				$groups = $this->name_stable_target_groups( $options, $plan, $original_file, $upload_dir );
 				if ( $groups === false || empty( $groups ) ) {
 					return $this->operation_terminal_failure( $operation, $data, $method, $context, 'partial', 'no_targets', __( 'No regenerated image sizes are available for watermarking.', 'image-watermark' ), true );
 				}
@@ -3192,8 +3848,11 @@ class Image_Watermark_Upload_Handler {
 					$failed = array_merge( $failed, $group['aliases'] );
 					continue;
 				}
-				$decoder_probe = apply_filters( 'iw_watermark_image_decoder', null, $group['path'], wp_check_filetype( $group['path'] )['type'] );
-				$stage_failed = $this->should_inject_operation_fault( 'during_staging', [ 'attachment_id' => $attachment_id, 'token' => $token, 'target' => $group['target'] ] ) || ( null !== $decoder_probe && ! $this->is_gd_image( $decoder_probe ) ) || ! $this->copy_file( $group['path'], $stage, 'stage', $attachment_id, $options ) || $this->should_inject_operation_fault( 'after_stage_copy', [ 'attachment_id' => $attachment_id, 'token' => $token, 'target' => $group['target'] ] );
+				// A name-stable reapply renders a selected size from its fresh clean
+				// output into the stage for its old path.
+				$render_source = isset( $group['source'] ) ? $group['source'] : $group['path'];
+				$decoder_probe = apply_filters( 'iw_watermark_image_decoder', null, $render_source, wp_check_filetype( $render_source )['type'] );
+				$stage_failed = $this->should_inject_operation_fault( 'during_staging', [ 'attachment_id' => $attachment_id, 'token' => $token, 'target' => $group['target'] ] ) || ( null !== $decoder_probe && ! $this->is_gd_image( $decoder_probe ) ) || ! $this->copy_file( $render_source, $stage, 'stage', $attachment_id, $options ) || $this->should_inject_operation_fault( 'after_stage_copy', [ 'attachment_id' => $attachment_id, 'token' => $token, 'target' => $group['target'] ] );
 				if ( ! $stage_failed && ! $this->do_watermark( $attachment_id, $stage, $group['aliases'][0], $upload_dir, $metadata, $options ) ) {
 					$stage_failed = true;
 					if ( ! empty( $this->last_renderer_failure['code'] ) ) {
@@ -3274,9 +3933,9 @@ class Image_Watermark_Upload_Handler {
 				return $this->operation_terminal_failure( $operation, $data, $method, $context, 'partial', 'metadata_commit_interrupted', __( 'Watermarked files were prepared, but regenerated metadata commit was interrupted.', 'image-watermark' ), true, $processed );
 			}
 			if ( $reapply ) {
-				$derivatives = $this->reconcile_regenerated_derivatives( $operation, $previous_derivatives, $data, $original_file, $upload_dir, true );
-				if ( ! empty( $derivatives['failed'] ) ) {
-					return $this->operation_terminal_failure( $operation, $data, $method, $context, 'partial', 'derivative_reconciliation_failed', __( 'Watermarked files were prepared, but obsolete derivatives could not be safely reconciled.', 'image-watermark' ), true, $processed, $derivatives['failed'] );
+				$derivatives_failed = $this->execute_name_stable_plan( $operation, $plan, $upload_dir, $options );
+				if ( ! empty( $derivatives_failed ) ) {
+					return $this->operation_terminal_failure( $operation, $data, $method, $context, 'partial', 'derivative_reconciliation_failed', __( 'Watermarked files were prepared, but obsolete derivatives could not be safely reconciled.', 'image-watermark' ), true, $processed, $derivatives_failed );
 				}
 			}
 			if ( $reapply && ! $this->commit_regenerated_metadata( $attachment_id, $data ) ) {
@@ -3289,7 +3948,18 @@ class Image_Watermark_Upload_Handler {
 			if ( ! $this->commit_watermarked_flag( $operation, 1 ) ) {
 				return $this->operation_terminal_failure( $operation, $data, $method, $context, 'partial', 'metadata_commit_failed', __( 'Watermarked files were prepared, but their watermark state could not be committed.', 'image-watermark' ), true, $processed );
 			}
-			return $this->operation_complete( $operation, $data, $attachment_id, $method, $context, 'watermarked', __( 'Watermark applied.', 'image-watermark' ), $processed );
+			if ( $reapply ) {
+				$deferred_failed = $this->retire_deferred_name_stable_paths( $operation, $plan, $upload_dir );
+				if ( ! empty( $deferred_failed ) ) {
+					return $this->operation_terminal_failure( $operation, $data, $method, $context, 'partial', 'derivative_reconciliation_failed', __( 'Watermarked files were prepared, but obsolete derivatives could not be safely reconciled.', 'image-watermark' ), true, $processed, $deferred_failed, $this->name_stable_skipped_sizes( $plan ) );
+				}
+			}
+			$skipped = $reapply ? $this->name_stable_skipped_sizes( $plan ) : [];
+			$partial = $reapply ? $this->name_stable_partial_code( $plan ) : '';
+			if ( $partial !== '' ) {
+				return $this->operation_terminal_failure( $operation, $data, $method, $context, 'partial', $partial, $this->name_stable_partial_message( $partial, 'reapply' ), true, $processed, $plan['failed'], $skipped );
+			}
+			return $this->operation_complete( $operation, $data, $attachment_id, $method, $context, 'watermarked', __( 'Watermark applied.', 'image-watermark' ), $processed, $skipped );
 		} finally {
 			$this->internal_operation_guard = null;
 			$this->release_operation_lock( $operation );
@@ -3799,7 +4469,7 @@ class Image_Watermark_Upload_Handler {
 	/**
 	 * Stage verified metadata output before promoting it over the live JPEG.
 	 *
-	 * This is the local P00-09 seam; attachment operation staging remains P00-09 work.
+	 * This stages the JPEG metadata rewrite within the enclosing attachment operation.
 	 *
 	 * @param string $file Live JPEG path.
 	 * @param string $contents Complete JPEG output.
@@ -3870,7 +4540,7 @@ class Image_Watermark_Upload_Handler {
 			if ( $temp_stat === false || ( $temp_stat['mode'] & 0777 ) !== $required_mode ) {
 				return $this->metadata_write_result( false, __( 'The JPEG metadata output could not be given the image file permissions.', 'image-watermark' ) );
 			}
-			// phpcs:ignore WordPress.WP.AlternativeFunctions.rename_rename -- Same-filesystem rename preserves P00-09 atomic promotion semantics.
+			// phpcs:ignore WordPress.WP.AlternativeFunctions.rename_rename -- Same-filesystem rename preserves atomic promotion semantics.
 			if ( ! @rename( $temp_file, $file ) ) {
 				return $this->metadata_write_result( false, __( 'The verified JPEG metadata output could not replace the image.', 'image-watermark' ) );
 			}
@@ -3896,6 +4566,14 @@ class Image_Watermark_Upload_Handler {
 	private function begin_operation( &$operation, $type, $context, $groups ) {
 		$journal = $this->read_operation_journal( $operation['attachment_id'] );
 		if ( $journal === false ) {
+			return false;
+		}
+		// Read the inheritable map before compaction drops it.
+		$inheritance = $this->select_inheritable_pre_operation( $journal, $operation['attachment_id'] );
+		$operation['pre_operation_stale'] = $inheritance['stale'];
+		if ( $inheritance['overflow'] ) {
+			// Nothing is written: the journal and every predecessor stay as they are.
+			$operation['begin_error_code'] = 'journal_budget_exceeded';
 			return false;
 		}
 		$selected_predecessor = isset( $operation['selected_recovery_predecessor'] ) && is_array( $operation['selected_recovery_predecessor'] ) ? $operation['selected_recovery_predecessor'] : null;
@@ -3934,6 +4612,15 @@ class Image_Watermark_Upload_Handler {
 			} else {
 				if ( $current_is_selected && ! empty( $journal['recoverable_predecessor'] ) && isset( $journal['recoverable_predecessor']['token'] ) && $journal['recoverable_predecessor']['token'] !== $current['token'] && ! $this->cleanup_operation_record_artifacts( $operation, $journal['recoverable_predecessor'], true ) ) {
 					return false;
+				}
+				if ( ! $current_is_selected && ! empty( $journal['recoverable_predecessor']['token'] ) && $journal['recoverable_predecessor']['token'] !== $current['token'] ) {
+					// The replaced predecessor's own unpromoted stages, including remap
+					// stages, are removed before its record is dropped. Its map, when it
+					// is the inherited one, is already carried forward above. A failed
+					// cleanup keeps the record (and its proof) and refuses to begin.
+					if ( ! $this->cleanup_operation_record_artifacts( $operation, $journal['recoverable_predecessor'], false ) ) {
+						return false;
+					}
 				}
 				$current['state'] = 'interrupted';
 				$current['ended_at'] = time();
@@ -3982,8 +4669,19 @@ class Image_Watermark_Upload_Handler {
 			'metadata_committed' => false,
 			'targets'     => $targets,
 		];
+		if ( is_array( $inheritance['pre'] ) ) {
+			$journal['current']['pre_operation'] = $inheritance['pre'];
+		}
 		$operation['journal'] = $journal;
 		return $this->write_operation_journal( $operation['attachment_id'], $journal );
+	}
+
+	/** @return array Failure result for a begin_operation() that wrote nothing. */
+	private function begin_failure_result( $operation, $token ) {
+		if ( isset( $operation['begin_error_code'] ) && $operation['begin_error_code'] === 'journal_budget_exceeded' ) {
+			return $this->operation_result( 'failed', $token, 'journal_budget_exceeded', __( 'Earlier interrupted watermark work on this image is unresolved and its recovery record cannot be extended safely. Review the image before retrying. No image was changed.', 'image-watermark' ), false );
+		}
+		return $this->operation_result( 'failed', $token, 'journal_invalid', __( 'Watermark recovery state could not be safely recorded.', 'image-watermark' ), true );
 	}
 
 	/** @param array $record Full record. @return array */
@@ -4708,7 +5406,15 @@ class Image_Watermark_Upload_Handler {
 		}
 		$regenerated_metadata_state = isset( $prior['regenerated_metadata_commit']['state'] ) ? $prior['regenerated_metadata_commit']['state'] : '';
 		$metadata_commit_is_provable = $regenerated_metadata_state === 'committed' || ( ! array_key_exists( 'regenerated_metadata_commit', $prior ) && ! array_key_exists( 'restoration', $prior ) );
-		if ( $final_targets > 0 && $matched === $final_targets && $final_targets === count( $prior['targets'] ) && $metadata_commit_is_provable && isset( $prior['type'] ) && $prior['type'] === 'apply' ) {
+		// Matching target hashes do not prove that a name-stable reapply resolved
+		// its derivatives (uncertain ownership, failed or filtered sizes). Such a
+		// record is never adopted as complete; the retry runs the reapply again.
+		$name_stable = isset( $prior['derivative_recovery'] ) || isset( $prior['pre_operation'] );
+		// Nor is an older retained record adopted while a newer current record
+		// still carries name-stable work: that work restored and regenerated files
+		// the older record never saw, so its matching hashes prove nothing.
+		$newer_name_stable = is_array( $current ) && ( ! isset( $current['token'], $prior['token'] ) || $current['token'] !== $prior['token'] ) && ( isset( $current['derivative_recovery'] ) || isset( $current['pre_operation'] ) );
+		if ( ! $name_stable && ! $newer_name_stable && $final_targets > 0 && $matched === $final_targets && $final_targets === count( $prior['targets'] ) && $metadata_commit_is_provable && isset( $prior['type'] ) && $prior['type'] === 'apply' ) {
 			$operation['journal'] = $journal;
 			$operation['journal']['current'] = $prior;
 			if ( ! $this->commit_watermarked_flag( $operation, 1 ) ) {
@@ -4928,16 +5634,25 @@ class Image_Watermark_Upload_Handler {
 	}
 
 	/** @return array */
-	private function operation_terminal_failure( &$operation, $data, $method, $context, $state, $code, $message, $retryable = false, $processed = [], $failed = [] ) {
-		$sizes = [ 'processed' => $processed, 'failed' => array_map( function( $name ) use ( $code ) { return [ 'name' => $name, 'code' => $code ]; }, $failed ), 'skipped' => [] ];
+	private function operation_terminal_failure( &$operation, $data, $method, $context, $state, $code, $message, $retryable = false, $processed = [], $failed = [], $skipped = [] ) {
+		$sizes = [ 'processed' => $processed, 'failed' => array_map( function( $name ) use ( $code ) { return [ 'name' => $name, 'code' => $code ]; }, $failed ), 'skipped' => $skipped ];
 		$terminal = $this->set_operation_state( $operation, $state, [ 'code' => $code, 'counts' => [ 'processed' => count( $processed ), 'failed' => count( $failed ) ] ] );
 		$cleanup_recovery = $state === 'failed' && empty( $processed );
 		if ( $terminal && ! $this->cleanup_operation_record_artifacts( $operation, $operation['journal']['current'], $cleanup_recovery ) ) {
 			$this->set_operation_state( $operation, $state, [ 'cleanup_pending' => true ] );
 		}
-		$result = $this->operation_result( $terminal ? $state : 'interrupted', $operation['token'], $terminal ? $code : 'journal_write_failed', $message, $retryable, $sizes );
+		$reported_code = $code;
+		if ( $terminal && $state === 'failed' && $this->operation_record_mutated_derivatives( $operation['journal']['current'] ) ) {
+			// The journal keeps the failure code; the existing outcome
+			// fields tell the user that live files changed and a retry finishes it.
+			$reported_code = 'failed_after_mutation';
+			/* translators: 1: Operation failure message. */
+			$message = sprintf( __( 'Live image files were already changed when the operation failed: %s Retry the operation to finish it.', 'image-watermark' ), $message );
+			$retryable = true;
+		}
+		$result = $this->operation_result( $terminal ? $state : 'interrupted', $operation['token'], $terminal ? $reported_code : 'journal_write_failed', $message, $retryable, $sizes );
 		if ( $terminal ) {
-			$this->record_last_operation( $operation['attachment_id'], 'error', $result['code'], $message, $context, $processed, $failed, [], $result['outcome'] );
+			$this->record_last_operation( $operation['attachment_id'], 'error', $result['code'], $message, $context, $processed, $failed, $skipped, $result['outcome'] );
 		}
 		return $this->operation_failure( $data, $method, $operation['attachment_id'], $context, $result );
 	}
@@ -4958,12 +5673,12 @@ class Image_Watermark_Upload_Handler {
 	}
 
 	/** @return array */
-	private function operation_complete( &$operation, $data, $attachment_id, $method, $context, $code, $message, $processed ) {
+	private function operation_complete( &$operation, $data, $attachment_id, $method, $context, $code, $message, $processed, $skipped = [] ) {
 		if ( ! $this->set_operation_state( $operation, 'complete', [ 'code' => $code, 'metadata_committed' => true, 'counts' => [ 'processed' => count( $processed ), 'failed' => 0 ] ] ) ) {
 			return $this->operation_terminal_failure( $operation, $data, $method, $context, 'partial', 'journal_write_failed', __( 'Watermarked files were prepared, but completion could not be safely recorded.', 'image-watermark' ), true, $processed );
 		}
-		$this->operation_result( 'complete', $operation['token'], $code, $message, false, [ 'processed' => $processed, 'skipped' => [], 'failed' => [] ] );
-		$this->record_last_operation( $attachment_id, 'success', $code, $message, $context, $processed, [], [], 'complete' );
+		$this->operation_result( 'complete', $operation['token'], $code, $message, false, [ 'processed' => $processed, 'skipped' => $skipped, 'failed' => [] ] );
+		$this->record_last_operation( $attachment_id, 'success', $code, $message, $context, $processed, [], $skipped, 'complete' );
 		if ( in_array( $context, [ 'manual-apply', 'manual-remove' ], true ) ) {
 			$this->settle_client_side_claim_after_manual( $attachment_id, $context );
 		}
@@ -5065,6 +5780,7 @@ class Image_Watermark_Upload_Handler {
 		if ( ! empty( $record['temporary_recovery_restore'] ) && is_array( $record['temporary_recovery_restore'] ) && ! empty( $record['temporary_recovery_restore']['stage'] ) ) {
 			$targets[] = $record['temporary_recovery_restore'];
 		}
+		$targets = array_merge( $targets, $this->name_stable_remap_artifacts( $record ) );
 		foreach ( $targets as $target ) {
 			if ( empty( $target['stage'] ) || strpos( basename( $target['stage'] ), '.iw-stage-' . $record['token'] . '-' ) !== 0 ) {
 				continue;
@@ -5163,10 +5879,9 @@ class Image_Watermark_Upload_Handler {
 	}
 
 	/**
-	 * Run WordPress derivative generation under a durable journal phase. WordPress
-	 * itself owns derivative writes (P00-08 will provide its full staged contract),
-	 * so this coordinator never reports complete until the generated metadata is
-	 * journaled, fenced, and committed by the caller.
+	 * Snapshot the attachment's existing derivative paths for recovery. WordPress
+	 * owns derivative generation; the caller journals, fences, and commits the
+	 * regenerated metadata before reporting completion.
 	 *
 	 * @return array|false
 	 */
@@ -5179,7 +5894,7 @@ class Image_Watermark_Upload_Handler {
 		$directory = $upload_dir['basedir'] . DIRECTORY_SEPARATOR . dirname( $metadata['file'] );
 		$original_image = ! empty( $metadata['original_image'] ) && is_string( $metadata['original_image'] ) ? $metadata['original_image'] : '';
 		foreach ( $metadata['sizes'] as $name => $size ) {
-			if ( ! is_string( $name ) || ! is_array( $size ) || empty( $size['file'] ) || ! is_string( $size['file'] ) || $size['file'] === $original_image ) {
+			if ( ! is_string( $name ) || $name === '' || ! is_array( $size ) || empty( $size['file'] ) || ! is_string( $size['file'] ) || $size['file'] === $original_image ) {
 				continue;
 			}
 			$path = $directory . DIRECTORY_SEPARATOR . $size['file'];
@@ -5197,222 +5912,1525 @@ class Image_Watermark_Upload_Handler {
 		return $paths;
 	}
 
-	/** @return array */
-	private function recoverable_derivative_paths( $operation, $upload_dir ) {
-		$paths = [];
-		$prior = ! empty( $operation['journal']['recoverable_predecessor']['derivative_recovery']['previous'] ) ? $operation['journal']['recoverable_predecessor']['derivative_recovery']['previous'] : [];
-		if ( ! is_array( $prior ) ) {
-			return $paths;
+	/**
+	 * Capture the attachment's pre-operation map before any mutation.
+	 * Paths use the same exclusions as snapshot_registered_derivatives().
+	 *
+	 * @return array|false
+	 */
+	private function snapshot_pre_operation( $attachment_id, $metadata, $main_path, $upload_dir ) {
+		$attached = get_post_meta( $attachment_id, '_wp_attached_file', true );
+		if ( ! is_array( $metadata ) || ! is_string( $attached ) || $this->normalize_operation_relative_path( $attached ) !== $attached ) {
+			return false;
 		}
-		foreach ( $prior as $name => $relative ) {
-			if ( ! is_string( $name ) || ! is_string( $relative ) || strpos( $relative, '..' ) !== false || strpos( $relative, ':' ) !== false ) {
+		$sizes = [];
+		foreach ( $this->snapshot_registered_derivatives( $metadata, $main_path, $upload_dir ) as $name => $relative ) {
+			$entry = $metadata['sizes'][ $name ];
+			$sizes[ $name ] = [
+				'path'   => $relative,
+				'width'  => isset( $entry['width'] ) ? max( 0, (int) $entry['width'] ) : 0,
+				'height' => isset( $entry['height'] ) ? max( 0, (int) $entry['height'] ) : 0,
+				'mime'   => isset( $entry['mime-type'] ) && is_string( $entry['mime-type'] ) ? $entry['mime-type'] : (string) wp_check_filetype( $relative )['type'],
+			];
+		}
+		$original = '';
+		if ( ! empty( $metadata['original_image'] ) && is_string( $metadata['original_image'] ) && basename( $metadata['original_image'] ) === $metadata['original_image'] && is_file( dirname( $main_path ) . DIRECTORY_SEPARATOR . $metadata['original_image'] ) ) {
+			$original = $metadata['original_image'];
+		}
+		// Identity is the actual file. Metadata dimensions can be stale, so
+		// they are used only when the main file cannot be read.
+		$dimensions = is_file( $main_path ) ? @getimagesize( $main_path ) : false;
+		if ( $dimensions ) {
+			$width = (int) $dimensions[0];
+			$height = (int) $dimensions[1];
+		} else {
+			$width = isset( $metadata['width'] ) ? (int) $metadata['width'] : 0;
+			$height = isset( $metadata['height'] ) ? (int) $metadata['height'] : 0;
+		}
+		return [
+			'file'           => $attached,
+			'width'          => max( 0, $width ),
+			'height'         => max( 0, $height ),
+			'mime'           => (string) wp_check_filetype( $attached )['type'],
+			'original_image' => $original,
+			'sizes'          => $sizes,
+			'candidates'     => [],
+			'inherited'      => [],
+		];
+	}
+
+	/** @return bool */
+	private function is_valid_pre_operation( $pre ) {
+		if ( ! is_array( $pre ) || ! isset( $pre['file'], $pre['sizes'] ) || ! is_string( $pre['file'] ) || $this->normalize_operation_relative_path( $pre['file'] ) !== $pre['file'] || ! is_array( $pre['sizes'] ) || count( $pre['sizes'] ) > 200 ) {
+			return false;
+		}
+		foreach ( [ 'width', 'height' ] as $key ) {
+			if ( ! isset( $pre[ $key ] ) || ! is_int( $pre[ $key ] ) || $pre[ $key ] < 0 ) {
+				return false;
+			}
+		}
+		if ( ! isset( $pre['mime'], $pre['original_image'] ) || ! is_string( $pre['mime'] ) || ! is_string( $pre['original_image'] ) || ( $pre['original_image'] !== '' && ( basename( $pre['original_image'] ) !== $pre['original_image'] || $this->normalize_operation_relative_path( $pre['original_image'] ) === false ) ) ) {
+			return false;
+		}
+		foreach ( $pre['sizes'] as $name => $size ) {
+			if ( ! is_string( $name ) || $name === '' || ! is_array( $size ) || ! isset( $size['path'], $size['width'], $size['height'], $size['mime'] ) || ! is_string( $size['path'] ) || $this->normalize_operation_relative_path( $size['path'] ) !== $size['path'] || ! is_int( $size['width'] ) || ! is_int( $size['height'] ) || $size['width'] < 0 || $size['height'] < 0 || ! is_string( $size['mime'] ) ) {
+				return false;
+			}
+		}
+		if ( ! isset( $pre['candidates'], $pre['inherited'] ) || ! is_array( $pre['candidates'] ) || ! is_array( $pre['inherited'] ) || count( $pre['inherited'] ) > self::PRE_OPERATION_TOKEN_LIMIT ) {
+			return false;
+		}
+		foreach ( $pre['candidates'] as $name => $paths ) {
+			if ( ! is_string( $name ) || ! is_array( $paths ) || count( $paths ) > self::PRE_OPERATION_CANDIDATE_LIMIT ) {
+				return false;
+			}
+			foreach ( $paths as $path ) {
+				if ( ! is_string( $path ) || $this->normalize_operation_relative_path( $path ) !== $path ) {
+					return false;
+				}
+			}
+		}
+		foreach ( $pre['inherited'] as $token ) {
+			if ( ! is_string( $token ) || $token === '' ) {
+				return false;
+			}
+		}
+		return ! isset( $pre['stale'] ) || is_bool( $pre['stale'] );
+	}
+
+	/** @return bool */
+	private function is_valid_name_stable_remap( $remap ) {
+		if ( ! is_array( $remap ) || count( $remap ) > 200 ) {
+			return false;
+		}
+		foreach ( $remap as $entry ) {
+			if ( ! is_array( $entry ) || empty( $entry['names'] ) || ! is_array( $entry['names'] ) || ! isset( $entry['from'], $entry['to'], $entry['state'] ) || ! is_string( $entry['from'] ) || ! is_string( $entry['to'] ) || ! in_array( $entry['state'], [ 'planned', 'allocated', 'staged', 'promoted' ], true ) ) {
+				return false;
+			}
+			$from = $this->normalize_operation_relative_path( $entry['from'] );
+			$to = $this->normalize_operation_relative_path( $entry['to'] );
+			if ( $from !== $entry['from'] || $to !== $entry['to'] || ( isset( $entry['size'] ) && ( ! is_int( $entry['size'] ) || $entry['size'] < 0 ) ) || ( isset( $entry['hash'] ) && ( ! is_string( $entry['hash'] ) || ! preg_match( '/^[a-f0-9]{64}$/', $entry['hash'] ) ) ) || ( isset( $entry['selected'] ) && ! is_bool( $entry['selected'] ) ) ) {
+				return false;
+			}
+			foreach ( $entry['names'] as $name ) {
+				if ( ! is_string( $name ) ) {
+					return false;
+				}
+			}
+		}
+		return true;
+	}
+
+	/** @return bool */
+	private function operation_record_committed_metadata( $record ) {
+		return is_array( $record ) && ( ! empty( $record['metadata_committed'] ) || ( isset( $record['regenerated_metadata_commit']['state'] ) && $record['regenerated_metadata_commit']['state'] === 'committed' ) );
+	}
+
+	/**
+	 * Evidence that a record changed live files beyond a refused preflight: a
+	 * promoted restoration, or a reached regeneration or reconciliation state.
+	 *
+	 * @return bool
+	 */
+	private function operation_record_mutated_derivatives( $record ) {
+		return is_array( $record ) && ( ( isset( $record['regeneration'] ) && is_array( $record['regeneration'] ) ) || ( isset( $record['derivative_recovery'] ) && is_array( $record['derivative_recovery'] ) ) || ( isset( $record['restoration']['state'] ) && $record['restoration']['state'] === 'promoted' ) );
+	}
+
+	/**
+	 * Path-only map of a 2.0.16 or early 2.0.17 record without pre_operation.
+	 * Dimensions come from the old file when it still exists; an unknown size is
+	 * never remapped.
+	 *
+	 * @return array|null
+	 */
+	private function legacy_pre_operation( $record, $attachment_id ) {
+		$paths = [];
+		if ( isset( $record['regeneration']['previous_derivatives'] ) && is_array( $record['regeneration']['previous_derivatives'] ) && ! empty( $record['regeneration']['previous_derivatives'] ) ) {
+			$paths = $record['regeneration']['previous_derivatives'];
+		} elseif ( isset( $record['derivative_recovery']['previous'] ) && is_array( $record['derivative_recovery']['previous'] ) ) {
+			$paths = $record['derivative_recovery']['previous'];
+		}
+		$attached = get_post_meta( $attachment_id, '_wp_attached_file', true );
+		$file = isset( $record['regeneration']['source'] ) && is_string( $record['regeneration']['source'] ) ? $record['regeneration']['source'] : $attached;
+		if ( empty( $paths ) || ! is_string( $file ) || $this->normalize_operation_relative_path( $file ) !== $file ) {
+			return null;
+		}
+		$upload_dir = wp_upload_dir();
+		$sizes = [];
+		foreach ( $paths as $name => $relative ) {
+			if ( ! is_string( $name ) || ! is_string( $relative ) || $this->normalize_operation_relative_path( $relative ) !== $relative ) {
 				continue;
 			}
 			$path = $upload_dir['basedir'] . DIRECTORY_SEPARATOR . str_replace( '/', DIRECTORY_SEPARATOR, $relative );
-			$identity = $this->operation_path_identity( $path, $upload_dir );
-			if ( $identity !== false && $identity['relative'] === $relative ) {
-				$paths[ $name ] = $relative;
+			$dimensions = is_file( $path ) ? @getimagesize( $path ) : false;
+			$sizes[ $name ] = [
+				'path'   => $relative,
+				'width'  => $dimensions ? (int) $dimensions[0] : 0,
+				'height' => $dimensions ? (int) $dimensions[1] : 0,
+				'mime'   => (string) wp_check_filetype( $relative )['type'],
+			];
+		}
+		$metadata = wp_get_attachment_metadata( $attachment_id, true );
+		return [
+			'file'           => $file,
+			'width'          => is_array( $metadata ) && isset( $metadata['width'] ) ? max( 0, (int) $metadata['width'] ) : 0,
+			'height'         => is_array( $metadata ) && isset( $metadata['height'] ) ? max( 0, (int) $metadata['height'] ) : 0,
+			'mime'           => (string) wp_check_filetype( $file )['type'],
+			'original_image' => '',
+			'sizes'          => $sizes,
+			'candidates'     => [],
+			'inherited'      => [],
+		];
+	}
+
+	/**
+	 * Select the map a new record inherits. Only an uncommitted
+	 * record that mutated derivatives, or one that already inherited a map, passes
+	 * it on; a newer completed record ends the chain. A map whose attached file no
+	 * longer matches is stale and ignored.
+	 *
+	 * @return array{pre:array|null,stale:bool}
+	 */
+	private function select_inheritable_pre_operation( $journal, $attachment_id ) {
+		$result = [ 'pre' => null, 'stale' => false, 'overflow' => false ];
+		if ( ! is_array( $journal ) ) {
+			return $result;
+		}
+		$attached = get_post_meta( $attachment_id, '_wp_attached_file', true );
+		foreach ( [ isset( $journal['current'] ) ? $journal['current'] : null, isset( $journal['recoverable_predecessor'] ) ? $journal['recoverable_predecessor'] : null ] as $record ) {
+			if ( ! is_array( $record ) || empty( $record['token'] ) || ! is_string( $record['token'] ) ) {
+				continue;
+			}
+			// A completed record ends the chain. A committed partial one does not:
+			// its old paths may still be unresolved (for example uncertain ownership).
+			if ( $this->operation_record_committed_metadata( $record ) && isset( $record['state'] ) && $record['state'] === 'complete' ) {
+				return $result;
+			}
+			$mutated = $this->operation_record_mutated_derivatives( $record );
+			$pre = isset( $record['pre_operation'] ) && $this->is_valid_pre_operation( $record['pre_operation'] ) ? $record['pre_operation'] : null;
+			if ( $pre === null && $mutated ) {
+				$pre = $this->legacy_pre_operation( $record, $attachment_id );
+			}
+			if ( $pre === null || ( ! $mutated && empty( $pre['inherited'] ) ) ) {
+				continue;
+			}
+			if ( ! is_string( $attached ) || $pre['file'] !== $attached ) {
+				$result['stale'] = true;
+				return $result;
+			}
+			unset( $pre['stale'] );
+			// Carry the predecessor's unresolved retirement obligations forward, so
+			// a fresh output it could not retire is not forgotten when the retry's
+			// generation names its files differently.
+			$protected = [];
+			foreach ( $pre['sizes'] as $size ) {
+				$protected[ $this->ownership_reference_key( $size['path'] ) ] = true;
+			}
+			foreach ( $this->name_stable_unresolved_paths( $record ) as $name => $paths ) {
+				foreach ( $paths as $path ) {
+					if ( isset( $protected[ $this->ownership_reference_key( $path ) ] ) || $this->normalize_operation_relative_path( $path ) !== $path ) {
+						continue;
+					}
+					$known = isset( $pre['candidates'][ $name ] ) ? $pre['candidates'][ $name ] : [];
+					$pre['candidates'][ $name ] = array_values( array_unique( array_merge( $known, [ $path ] ) ) );
+				}
+			}
+			// A merged map that would exceed the candidate bound is never built: the
+			// caller refuses before writing, so the predecessor keeps its evidence.
+			foreach ( $pre['candidates'] as $paths ) {
+				if ( count( $paths ) > self::PRE_OPERATION_CANDIDATE_LIMIT ) {
+					$result['overflow'] = true;
+					return $result;
+				}
+			}
+			$pre['inherited'] = array_slice( array_values( array_unique( array_merge( [ $record['token'] ], $pre['inherited'] ) ) ), 0, self::PRE_OPERATION_TOKEN_LIMIT );
+			// Only a map the reader accepts is inherited. A converted 2.0.16 record
+			// can exceed the size bound; it is refused the same way.
+			if ( ! $this->is_valid_pre_operation( $pre ) ) {
+				$result['overflow'] = true;
+				return $result;
+			}
+			$result['pre'] = $pre;
+			return $result;
+		}
+		return $result;
+	}
+
+	/**
+	 * Paths a record planned to retire but did not prove retired: its fresh
+	 * outputs, its remap sources, and anything left in `retiring`.
+	 *
+	 * @return array<string,string[]> Size name (or `_pending`) => paths.
+	 */
+	private function name_stable_unresolved_paths( $record ) {
+		$recovery = isset( $record['derivative_recovery'] ) && is_array( $record['derivative_recovery'] ) ? $record['derivative_recovery'] : [];
+		$retired = isset( $recovery['retired'] ) && is_array( $recovery['retired'] ) ? $recovery['retired'] : [];
+		$paths = [];
+		foreach ( isset( $recovery['regenerated'] ) && is_array( $recovery['regenerated'] ) ? $recovery['regenerated'] : [] as $name => $path ) {
+			if ( is_string( $name ) && is_string( $path ) && ! in_array( $path, $retired, true ) ) {
+				$paths[ $name ][] = $path;
+			}
+		}
+		foreach ( isset( $recovery['remap'] ) && is_array( $recovery['remap'] ) ? $recovery['remap'] : [] as $entry ) {
+			if ( is_array( $entry ) && isset( $entry['from'], $entry['names'][0] ) && is_string( $entry['from'] ) && is_string( $entry['names'][0] ) && ! in_array( $entry['from'], $retired, true ) ) {
+				$paths[ $entry['names'][0] ][] = $entry['from'];
+			}
+		}
+		foreach ( isset( $recovery['retiring'] ) && is_array( $recovery['retiring'] ) ? $recovery['retiring'] : [] as $path ) {
+			if ( is_string( $path ) && ! in_array( $path, $retired, true ) ) {
+				$paths['_pending'][] = $path;
 			}
 		}
 		return $paths;
 	}
 
 	/**
-	 * Determine whether another attachment resolves to a candidate derivative.
-	 * Direct attachment-file matches are checked first. Metadata candidates are
-	 * followed by an exhaustive, paged attachment scan. Every reference is
-	 * canonicalized with the same identity rule used by target grouping. The scan
-	 * has a fixed 10,000-row ceiling; an incomplete or failed scan is uncertain,
-	 * never permission to delete.
+	 * Serialized bound of the journal while this operation and one retry run:
+	 * this record at its largest beside the actual
+	 * predecessor or, for a first attempt, its retry's record beside the larger
+	 * of the two, plus the two largest possible history entries.
 	 *
-	 * @return string exclusive|shared|uncertain
+	 * Each record field is counted once per size name that can appear in it,
+	 * with every value not yet known at its maximum width. A name with an old
+	 * path can be remapped, retired, and reported; any other name (registered
+	 * since upload, or inherited only as a candidate) gains a fresh output and
+	 * at most one retirement. Each existing candidate has its own slot.
+	 *
+	 * A first attempt also reserves the room its retry needs to be admitted: the
+	 * retry inherits up to one fresh output and one pending retirement per name,
+	 * plus every pending candidate retirement, as new candidates, and reserves
+	 * nothing further itself. A later retry is admitted only if it fits.
+	 *
+	 * The bound covers generation results within the known names (plus 8 that a
+	 * size filter may add) and the widths measured here. A filter that adds more
+	 * names, or longer names or paths, can still make a later journal write
+	 * exceed the cap, which refuses that write; the record then stays at its
+	 * last durable state.
+	 *
+	 * @param array $operation Current operation; `target_limit` caps the
+	 *                         watermark targets (50 when absent).
+	 * @param array $pre Pre-operation map this record will hold.
+	 * @return int
 	 */
-	private function derivative_path_ownership( $attachment_id, $path, $identity, $upload_dir ) {
+	private function estimate_name_stable_journal_bytes( $operation, $pre ) {
+		$journal = $operation['journal'];
+		$record = $journal['current'];
+		$first_attempt = empty( $pre['inherited'] );
+		// The inherited-token list counts at its full length. Candidates count in
+		// their slots below, not in the serialized map.
+		$pre['inherited'] = array_pad( $pre['inherited'], self::PRE_OPERATION_TOKEN_LIMIT, str_repeat( 't', 64 ) );
+		$record['pre_operation'] = array_merge( $pre, [ 'candidates' => [] ] );
+		$directory = dirname( $pre['file'] );
+		$prefix = $directory === '.' || $directory === '' ? '' : $directory . '/';
+		// A fresh output is the main file's stem plus "-{W}x{H}"; a stage or
+		// recovery file is a token-prefixed name in the same directory.
+		$longest_path = max( 64, strlen( $pre['file'] ) + 16 );
+		$old = [];
+		$names = [];
+		// Candidate list entries, and the distinct paths they name: a path
+		// listed under two names (one of them `_pending`) retires once.
+		$candidates = 0;
+		$candidate_paths = [];
+		foreach ( $pre['sizes'] as $name => $size ) {
+			$old[ (string) $name ] = true;
+			$names[ (string) $name ] = true;
+			$longest_path = max( $longest_path, strlen( $size['path'] ) );
+		}
+		foreach ( $pre['candidates'] as $name => $paths ) {
+			$names[ (string) $name ] = true;
+			$candidates += count( $paths );
+			foreach ( $paths as $path ) {
+				$candidate_paths[ $path ] = true;
+				$longest_path = max( $longest_path, strlen( $path ) );
+			}
+		}
+		foreach ( array_keys( wp_get_registered_image_subsizes() ) as $name ) {
+			$names[ (string) $name ] = true;
+		}
+		$longest_name = 16;
+		foreach ( array_keys( $names ) as $name ) {
+			$longest_name = max( $longest_name, strlen( $name ) );
+		}
+		$path = str_repeat( 'p', $longest_path );
+		// Restoration and backup paths can carry a backup directory prefix inside
+		// uploads (the backup root is filterable).
+		$wide = str_repeat( 'p', $longest_path + 256 );
+		$owned = str_repeat( 's', strlen( $prefix ) + 112 );
+		$hash = str_repeat( 'f', 64 );
+		// Outcome and failure codes are at most 32 characters
+		// (`derivative_reconciliation_failed`).
+		$code = str_repeat( 'c', 32 );
+		$name = str_repeat( 'n', $longest_name );
+		// List entries: a record's lists stay far below 1,000 entries.
+		$path_cost = strlen( serialize( [ 999 => $path ] ) );
+		$name_cost = strlen( serialize( [ 999 => $name ] ) );
+		$map_cost = strlen( serialize( [ $name => $path ] ) );
+		$outcome_cost = strlen( serialize( [ $name . '#intermediate' => $code ] ) );
+		// remap entry; outcomes for the name, its source, and its intermediates;
+		// previous, regenerated, and regeneration maps; the generated-size list, a
+		// target alias, and the candidate-map key; and one retirement of its old or
+		// fresh path (a conflict or changed definition retires the old path, a remap
+		// its fresh source, never both), journaled as retiring and retired.
+		// Candidates retire in their own slots.
+		$with_old_path = strlen( serialize( [ 'names' => [ $name ], 'from' => $path, 'to' => $path, 'state' => 'promoted', 'size' => PHP_INT_MAX, 'hash' => $hash, 'selected' => false ] ) )
+			+ 3 * $outcome_cost + 3 * $map_cost + 3 * $name_cost + 2 * $path_cost;
+		// No remap and no previous path: its fresh output, and at most one
+		// retirement (an identity rollback retires the fresh output).
+		$without_old_path = 2 * $outcome_cost + $map_cost + 3 * $name_cost + 2 * $path_cost;
+		// Room for sizes a size filter adds during generation without registering
+		// them; more than this would be refused by the journal cap, not truncated.
+		$unregistered = 8;
+		// A candidate path is journaled as retiring and retired once; each list
+		// entry naming it costs one more path.
+		$retirement = 2 * $path_cost;
+		$targets = isset( $operation['target_limit'] ) ? max( 1, min( 50, (int) $operation['target_limit'] ) ) : 50;
+		$target = strlen( serialize( [ 'target' => $path, 'root' => 'uploads', 'stage' => $owned, 'size' => PHP_INT_MAX, 'hash' => $hash, 'aliases' => [], 'intent' => 'watermark-output', 'state' => 'allocated', 'recovery' => [ 'state' => 'verified', 'root' => 'uploads', 'path' => $owned, 'size' => PHP_INT_MAX, 'hash' => $hash ] ] ) );
+		// Fields with no per-name part, all at maximum width.
+		$fixed = strlen( serialize( [
+			'restoration'                 => [ 'target' => $path, 'root' => 'uploads', 'stage' => $owned, 'size' => PHP_INT_MAX, 'hash' => $hash, 'aliases' => [ 'full' ], 'intent' => 'restoration', 'state' => 'promoted', 'source' => [ 'path' => $wide, 'size' => PHP_INT_MAX, 'hash' => $hash, 'recovery' => $wide ] ],
+			'temporary_recovery_restore'  => [ 'target' => $path, 'root' => 'uploads', 'stage' => $owned, 'state' => 'promoted' ],
+			'backup'                      => [ 'state' => 'promoted', 'root' => 'backup', 'path' => $wide, 'stage' => $wide, 'source' => [ 'path' => $wide, 'size' => PHP_INT_MAX, 'hash' => $hash ], 'size' => PHP_INT_MAX, 'hash' => $hash, 'recovery' => $wide ],
+			'backup_association'          => [ 'state' => 'committed', 'intended' => PHP_INT_MAX, 'preserved' => false, 'value' => PHP_INT_MAX, 'meta_id' => PHP_INT_MAX ],
+			'regeneration'                => [ 'purpose' => 'reapply', 'source' => $wide, 'size' => PHP_INT_MAX, 'hash' => $hash, 'metadata_hash' => $hash, 'state' => 'generated', 'previous_derivatives' => [], 'sizes' => [] ],
+			'regenerated_metadata_commit' => [ 'state' => 'committed', 'hash' => $hash ],
+			'derivative_recovery'         => [ 'previous' => [], 'regenerated' => [], 'outcomes' => [ 'full#variant' => $code ], 'retired' => [ $path ], 'retiring' => [ $path ], 'remap' => [] ],
+			'code'                        => $code,
+			'counts'                      => [ 'processed' => PHP_INT_MAX, 'failed' => PHP_INT_MAX ],
+			'cleanup_pending'             => false,
+			'metadata_committed'          => false,
+			'ended_at'                    => PHP_INT_MAX,
+		] ) ) + 1024;
+		$record_bytes = strlen( serialize( $record ) ) + count( $old ) * $with_old_path + ( count( $names ) - count( $old ) + $unregistered ) * $without_old_path + count( $candidate_paths ) * $retirement + $candidates * $path_cost + $targets * $target + $fixed;
+		// A first attempt reserves what its retry needs to be admitted. The retry's
+		// record can add, per name, a fresh output as a new candidate (listed,
+		// retiring, retired) and a pending retirement under `_pending` (listed
+		// only: retirements are keyed by path), every existing candidate again
+		// under `_pending`, and the filter-added names and `_pending` itself as
+		// names. Its predecessor is this record, or the current predecessor when a
+		// terminal failure of this record keeps it, so the retry's record is
+		// paired with the larger of the two. A retry reserves nothing for a
+		// further retry, so it is admitted whenever the first attempt was, within
+		// the inheritance limits (candidates per name, sizes); a later retry is
+		// admitted only if it fits, and is refused before any change otherwise.
+		$retry_growth = ( count( $names ) + $unregistered ) * ( $retirement + 2 * $path_cost ) + count( $candidate_paths ) * $path_cost + ( $unregistered + 1 ) * $without_old_path;
+		// The predecessor is counted at its actual size.
+		$predecessor_bytes = empty( $journal['recoverable_predecessor'] ) ? 0 : strlen( serialize( $journal['recoverable_predecessor'] ) );
+		$records = $first_attempt ? $record_bytes + $retry_growth + max( $record_bytes, $predecessor_bytes ) : $record_bytes + $predecessor_bytes;
+		// History keeps two entries: the largest existing ones, or compacted records
+		// of this operation and its retry, whose targets are at most $targets.
+		$compact = strlen( serialize( $this->compact_operation_record( $record ) ) ) + $targets * $target + ( count( $names ) + $unregistered ) * $name_cost;
+		$entries = [ $compact, $compact ];
+		foreach ( $journal['history'] as $entry ) {
+			$entries[] = strlen( serialize( $entry ) );
+		}
+		rsort( $entries );
+		$rest = $journal;
+		$rest['current'] = null;
+		$rest['recoverable_predecessor'] = null;
+		$rest['history'] = [];
+		return strlen( serialize( $rest ) ) + $entries[0] + $entries[1] + $records;
+	}
+
+	/**
+	 * Deadline for both ownership passes: one budget per operation, measured from
+	 * the moment it took the attachment lease, minus the restore/generation/commit
+	 * reserve. Earlier images in the same CLI process or bulk request do not use
+	 * it up.
+	 *
+	 * @return float
+	 */
+	private function operation_ownership_deadline( $operation ) {
+		$start = isset( $operation['time_origin'] ) && is_float( $operation['time_origin'] ) ? $operation['time_origin'] : microtime( true );
+		if ( $this->operation_fault_injector ) {
+			// Test seam: a float moves the origin, so a budget edge can be reached
+			// without waiting for it.
+			$injected = call_user_func( $this->operation_fault_injector, 'operation_time_origin', [ 'attachment_id' => $operation['attachment_id'], 'origin' => $start ] );
+			$start = is_float( $injected ) ? $injected : $start;
+		}
+		$limit = (float) self::OPERATION_TIME_LIMIT;
+		$maximum = (int) ini_get( 'max_execution_time' );
+		if ( $maximum > 0 ) {
+			$limit = min( $limit, 0.6 * $maximum );
+		}
+		return $start + $limit - self::OPERATION_TIME_RESERVE;
+	}
+
+	/** @return string */
+	private function ownership_reference_key( $relative ) {
+		$relative = str_replace( '\\', '/', (string) $relative );
+		return DIRECTORY_SEPARATOR === '\\' ? strtolower( $relative ) : $relative;
+	}
+
+	/**
+	 * One exhaustive ownership pass for several uploads-relative paths.
+	 * Every reference of every other attachment is canonicalized with the target
+	 * grouping identity rule (so a differently named symlink still counts); a
+	 * missing candidate matches by its recorded relative path. An incomplete,
+	 * failed, over-ceiling, or over-budget scan makes every path uncertain.
+	 *
+	 * @return array{uncertain:bool,paths:array<string,string>}
+	 */
+	private function derivative_paths_ownership( $attachment_id, $relatives, $upload_dir, $deadline ) {
 		global $wpdb;
-		if ( ! isset( $wpdb ) || ! isset( $wpdb->postmeta, $wpdb->posts ) || ! is_object( $wpdb ) || ! method_exists( $wpdb, 'get_col' ) || ! method_exists( $wpdb, 'get_results' ) ) {
-			return 'uncertain';
+		$results = [];
+		$identities = [];
+		$keys = [];
+		foreach ( array_unique( $relatives ) as $relative ) {
+			if ( ! is_string( $relative ) || $relative === '' ) {
+				continue;
+			}
+			$results[ $relative ] = 'exclusive';
+			$identity = $this->operation_path_identity( $upload_dir['basedir'] . DIRECTORY_SEPARATOR . str_replace( '/', DIRECTORY_SEPARATOR, $relative ), $upload_dir );
+			if ( $identity !== false ) {
+				$identities[ $identity['identity'] ][] = $relative;
+			}
+			$keys[ $this->ownership_reference_key( $relative ) ][] = $relative;
 		}
-		$relative = $identity['relative'];
+		if ( empty( $results ) ) {
+			return [ 'uncertain' => false, 'paths' => [] ];
+		}
+		$uncertain = [ 'uncertain' => true, 'paths' => array_fill_keys( array_keys( $results ), 'uncertain' ) ];
+		if ( ! isset( $wpdb ) || ! is_object( $wpdb ) || ! isset( $wpdb->postmeta, $wpdb->posts ) || ! method_exists( $wpdb, 'get_col' ) || ! method_exists( $wpdb, 'get_results' ) ) {
+			return $uncertain;
+		}
+		$mark = function( $reference, $path ) use ( &$results, $identities, $keys, $upload_dir ) {
+			$key = $this->ownership_reference_key( $reference );
+			foreach ( isset( $keys[ $key ] ) ? $keys[ $key ] : [] as $relative ) {
+				$results[ $relative ] = 'shared';
+			}
+			$identity = $this->operation_path_identity( $path, $upload_dir );
+			if ( $identity !== false && isset( $identities[ $identity['identity'] ] ) ) {
+				foreach ( $identities[ $identity['identity'] ] as $relative ) {
+					$results[ $relative ] = 'shared';
+				}
+			}
+		};
+		$candidates = array_keys( $results );
 		$wpdb->last_error = '';
-		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- P00-08 one-shot ownership scan must prove a derivative is exclusive before destructive cleanup.
-		$direct = $wpdb->get_col( $wpdb->prepare( "SELECT pm.post_id FROM {$wpdb->postmeta} pm INNER JOIN {$wpdb->posts} p ON p.ID = pm.post_id WHERE p.post_type = 'attachment' AND pm.meta_key = %s AND pm.meta_value = %s AND pm.post_id != %d LIMIT 1", '_wp_attached_file', $relative, $attachment_id ) );
-		if ( ! empty( $wpdb->last_error ) ) {
-			return 'uncertain';
+		// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQLPlaceholders.UnfinishedPrepare -- The ownership pass must prove derivatives are exclusive before destructive work.
+		$direct = $wpdb->get_col( $wpdb->prepare( "SELECT pm.meta_value FROM {$wpdb->postmeta} pm INNER JOIN {$wpdb->posts} p ON p.ID = pm.post_id WHERE p.post_type = 'attachment' AND pm.meta_key = '_wp_attached_file' AND pm.post_id != %d AND pm.meta_value IN (" . implode( ',', array_fill( 0, count( $candidates ), '%s' ) ) . ')', array_merge( [ (int) $attachment_id ], $candidates ) ) );
+		if ( ! empty( $wpdb->last_error ) || ! is_array( $direct ) ) {
+			return $uncertain;
 		}
-		if ( ! empty( $direct ) ) {
-			return 'shared';
+		foreach ( $direct as $value ) {
+			$mark( $value, $upload_dir['basedir'] . DIRECTORY_SEPARATOR . $value );
 		}
 
 		$last_id = 0;
 		$scanned = 0;
 		$batch_size = 100;
-		$maximum_rows = 10000;
-		while ( $scanned < $maximum_rows ) {
-			if ( $this->should_inject_operation_fault( 'ownership_scan_row_cap', [ 'attachment_id' => $attachment_id, 'scanned' => $scanned ] ) ) {
-				return 'uncertain';
+		while ( true ) {
+			if ( $this->should_inject_operation_fault( 'ownership_scan_row_cap', [ 'attachment_id' => $attachment_id, 'scanned' => $scanned ] ) || microtime( true ) > $deadline ) {
+				return $uncertain;
 			}
 			$wpdb->last_error = '';
-			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- P00-08 bounded one-shot ownership scan must read current attachment metadata before destructive cleanup.
+			// phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching -- The bounded ownership pass must read current attachment metadata before destructive work.
 			$rows = $wpdb->get_results( $wpdb->prepare( "SELECT p.ID, MAX(CASE WHEN pm.meta_key = '_wp_attached_file' THEN pm.meta_value ELSE NULL END) AS attached_file, MAX(CASE WHEN pm.meta_key = '_wp_attachment_metadata' THEN pm.meta_value ELSE NULL END) AS attachment_metadata, SUM(pm.meta_key = '_wp_attached_file') AS attached_count, SUM(pm.meta_key = '_wp_attachment_metadata') AS metadata_count FROM {$wpdb->posts} p LEFT JOIN {$wpdb->postmeta} pm ON pm.post_id = p.ID AND pm.meta_key IN ('_wp_attached_file', '_wp_attachment_metadata') WHERE p.post_type = 'attachment' AND p.ID > %d GROUP BY p.ID ORDER BY p.ID ASC LIMIT %d", $last_id, $batch_size ) );
-			if ( ! empty( $wpdb->last_error ) || ! is_array( $rows ) ) {
-				return 'uncertain';
-			}
-			if ( empty( $rows ) ) {
-				return 'exclusive';
+			// The budget is also checked after each batch, so a final batch that
+			// finishes past the deadline cannot authorize a destructive step.
+			if ( ! empty( $wpdb->last_error ) || ! is_array( $rows ) || microtime( true ) > $deadline ) {
+				return $uncertain;
 			}
 			foreach ( $rows as $row ) {
 				if ( ! isset( $row->ID ) || (int) $row->ID <= $last_id || (int) $row->attached_count > 1 || (int) $row->metadata_count > 1 ) {
-					return 'uncertain';
+					return $uncertain;
 				}
 				$last_id = (int) $row->ID;
-				$scanned++;
-				if ( $scanned > $maximum_rows ) {
-					return 'uncertain';
+				if ( ++$scanned > self::OWNERSHIP_ROW_CEILING ) {
+					return $uncertain;
 				}
 				if ( $last_id === (int) $attachment_id ) {
 					continue;
 				}
 				if ( ! empty( $row->attached_file ) ) {
 					if ( ! is_string( $row->attached_file ) ) {
-						return 'uncertain';
+						return $uncertain;
 					}
-					$candidate_identity = $this->operation_path_identity( $upload_dir['basedir'] . DIRECTORY_SEPARATOR . $row->attached_file, $upload_dir );
-					if ( $candidate_identity !== false && $candidate_identity['identity'] === $identity['identity'] ) {
-						return 'shared';
-					}
+					$mark( $row->attached_file, $upload_dir['basedir'] . DIRECTORY_SEPARATOR . $row->attached_file );
 				}
 				if ( empty( $row->attachment_metadata ) ) {
 					continue;
 				}
 				$metadata = maybe_unserialize( $row->attachment_metadata );
-				if ( ! is_array( $metadata ) || empty( $metadata['file'] ) || ! is_string( $metadata['file'] ) ) {
-					return 'uncertain';
+				if ( ! is_array( $metadata ) ) {
+					return $uncertain;
 				}
-				$directory = $upload_dir['basedir'] . DIRECTORY_SEPARATOR . dirname( $metadata['file'] );
-				$references = [ $upload_dir['basedir'] . DIRECTORY_SEPARATOR . $metadata['file'] ];
+				if ( array_key_exists( 'file', $metadata ) ) {
+					if ( ! is_string( $metadata['file'] ) || $metadata['file'] === '' ) {
+						return $uncertain;
+					}
+					$file = $metadata['file'];
+				} else {
+					// Audio and document metadata may contain only a file size. PDF
+					// previews still carry image references anchored by the attached file.
+					$file = is_string( $row->attached_file ) && $row->attached_file !== '' ? $row->attached_file : null;
+					if ( $file !== null && $this->normalize_operation_relative_path( $file ) !== $file ) {
+						return $uncertain;
+					}
+					if ( $file === null ) {
+						if ( array_key_exists( 'sizes', $metadata ) || array_key_exists( 'original_image', $metadata ) ) {
+							return $uncertain;
+						}
+						continue;
+					}
+				}
+				$directory = dirname( $file );
+				$prefix = $directory === '.' || $directory === '' ? '' : $directory . '/';
+				$references = [ $file ];
 				if ( isset( $metadata['original_image'] ) ) {
 					if ( ! is_string( $metadata['original_image'] ) ) {
-						return 'uncertain';
+						return $uncertain;
 					}
-					$references[] = $directory . DIRECTORY_SEPARATOR . $metadata['original_image'];
+					$references[] = $prefix . $metadata['original_image'];
 				}
 				if ( isset( $metadata['sizes'] ) ) {
 					if ( ! is_array( $metadata['sizes'] ) ) {
-						return 'uncertain';
+						return $uncertain;
 					}
 					foreach ( $metadata['sizes'] as $size ) {
 						if ( ! is_array( $size ) || ! isset( $size['file'] ) || ! is_string( $size['file'] ) ) {
-							return 'uncertain';
+							return $uncertain;
 						}
-						$references[] = $directory . DIRECTORY_SEPARATOR . $size['file'];
+						$references[] = $prefix . $size['file'];
 					}
 				}
 				foreach ( $references as $reference ) {
-					$candidate_identity = $this->operation_path_identity( $reference, $upload_dir );
-					if ( $candidate_identity !== false && $candidate_identity['identity'] === $identity['identity'] ) {
-						return 'shared';
-					}
+					$mark( $reference, $upload_dir['basedir'] . DIRECTORY_SEPARATOR . str_replace( '/', DIRECTORY_SEPARATOR, $reference ) );
 				}
 			}
 			if ( count( $rows ) < $batch_size ) {
-				return 'exclusive';
+				if ( microtime( true ) > $deadline ) {
+					return $uncertain;
+				}
+				return [ 'uncertain' => false, 'paths' => $results ];
 			}
 		}
-		return 'uncertain';
 	}
 
-	/** @return array{retired:array,failed:array,outcomes:array} */
-	private function reconcile_regenerated_derivatives( &$operation, $previous, $metadata, $original_file, $upload_dir, $watermarked ) {
-		if ( empty( $previous ) ) {
-			return [ 'retired' => [], 'failed' => [], 'outcomes' => [] ];
-		}
-		$fresh = $this->snapshot_registered_derivatives( $metadata, $original_file, $upload_dir );
-		$outcomes = [];
+	/**
+	 * Old paths whose name or presence is expected to change, plus inherited
+	 * intermediate candidates. An unscaled attachment with unchanged sizes has
+	 * none, and then no ownership pass runs.
+	 *
+	 * @return string[]
+	 */
+	private function name_stable_ownership_candidates( $pre ) {
+		$registered = wp_get_registered_image_subsizes();
+		$directory = dirname( $pre['file'] );
+		$prefix = $directory === '.' || $directory === '' ? '' : $directory . '/';
+		$stem = pathinfo( $pre['file'], PATHINFO_FILENAME );
+		$extension = pathinfo( $pre['file'], PATHINFO_EXTENSION );
 		$candidates = [];
-		foreach ( $previous as $name => $old_path ) {
-			if ( in_array( $old_path, $fresh, true ) ) {
-				$outcomes[ $name ] = 'retained';
-			} elseif ( isset( $fresh[ $name ] ) ) {
-				$outcomes[ $name ] = 'retire_replaced';
-				$candidates[ $name ] = $old_path;
-			} elseif ( $watermarked ) {
-				// Core drops unregistered custom sizes on generation. Do not revive
-				// them; the attachment's watermarked state establishes ownership of
-				// this formerly registered derivative for safe retirement.
-				$outcomes[ $name ] = 'retire_size_gone';
-				$candidates[ $name ] = $old_path;
-			} else {
-				$outcomes[ $name ] = 'left_unreconciled';
+		foreach ( $pre['sizes'] as $name => $size ) {
+			$dimensions = isset( $registered[ $name ] ) ? image_resize_dimensions( $pre['width'], $pre['height'], (int) $registered[ $name ]['width'], (int) $registered[ $name ]['height'], $registered[ $name ]['crop'] ) : false;
+			if ( ! $dimensions || $size['path'] !== $prefix . $stem . '-' . (int) $dimensions[4] . 'x' . (int) $dimensions[5] . ( $extension === '' ? '' : '.' . $extension ) ) {
+				$candidates[] = $size['path'];
 			}
 		}
-		$details = [
-			'derivative_recovery' => [
-				'previous' => $previous,
-				'regenerated' => $fresh,
-				'outcomes' => $outcomes,
-				'retired' => [],
-				'retiring' => [],
-			],
+		foreach ( $pre['candidates'] as $paths ) {
+			$candidates = array_merge( $candidates, $paths );
+		}
+		return array_values( array_unique( $candidates ) );
+	}
+
+	/**
+	 * Record the pre-operation map, check the journal byte budget, and run the
+	 * pre-mutation ownership pass. Nothing has changed on disk when this fails.
+	 *
+	 * @return true|array{code:string,message:string}
+	 */
+	private function prepare_name_stable_operation( &$operation, $data, $main_path, $upload_dir, $clean_source ) {
+		if ( $this->should_inject_operation_fault( 'before_pre_operation_record', [ 'attachment_id' => $operation['attachment_id'], 'token' => $operation['token'] ] ) ) {
+			return [ 'code' => 'journal_write_failed', 'message' => __( 'Watermark recovery state could not be updated.', 'image-watermark' ) ];
+		}
+		$snapshot = $this->snapshot_pre_operation( $operation['attachment_id'], $data, $main_path, $upload_dir );
+		if ( $snapshot === false ) {
+			return [ 'code' => 'invalid_metadata', 'message' => __( 'Invalid attachment metadata.', 'image-watermark' ) ];
+		}
+		$current = $operation['journal']['current'];
+		if ( isset( $current['pre_operation'] ) && $this->is_valid_pre_operation( $current['pre_operation'] ) ) {
+			$pre = $current['pre_operation'];
+			// The current metadata can name intermediate files of an interrupted
+			// attempt. They never override the inherited paths; they are retired at
+			// the end when nothing references them.
+			foreach ( $snapshot['sizes'] as $name => $size ) {
+				if ( ! isset( $pre['sizes'][ $name ] ) || $pre['sizes'][ $name ]['path'] !== $size['path'] ) {
+					$paths = isset( $pre['candidates'][ $name ] ) ? $pre['candidates'][ $name ] : [];
+					$pre['candidates'][ $name ] = array_values( array_unique( array_merge( $paths, [ $size['path'] ] ) ) );
+				}
+			}
+		} else {
+			$pre = $snapshot;
+			if ( ! empty( $operation['pre_operation_stale'] ) ) {
+				$pre['stale'] = true;
+			}
+		}
+		// Restoring a source with another geometry or format would change
+		// the main file's identity, so it is refused before anything changes.
+		$source_size = is_string( $clean_source ) && is_file( $clean_source ) ? @getimagesize( $clean_source ) : false;
+		if ( ! $source_size || ( $pre['width'] > 0 && (int) $source_size[0] !== $pre['width'] ) || ( $pre['height'] > 0 && (int) $source_size[1] !== $pre['height'] ) || ( $pre['mime'] !== '' && $source_size['mime'] !== $pre['mime'] ) ) {
+			return [ 'code' => 'backup_identity_mismatch', 'message' => __( 'The backup does not have the image\'s current dimensions or format, for example because another tool resized or converted the image after the backup was made. No image was changed.', 'image-watermark' ) ];
+		}
+		$candidate_overflow = false;
+		foreach ( $pre['candidates'] as $paths ) {
+			$candidate_overflow = $candidate_overflow || count( $paths ) > self::PRE_OPERATION_CANDIDATE_LIMIT;
+		}
+		if ( $candidate_overflow || ! $this->is_valid_pre_operation( $pre ) ) {
+			return [ 'code' => 'journal_budget_exceeded', 'message' => __( 'This image has too many sizes for its recovery record to be kept safely. No image was changed.', 'image-watermark' ) ];
+		}
+		$reserved = $this->estimate_name_stable_journal_bytes( $operation, $pre );
+		if ( $this->operation_fault_injector ) {
+			// Test seam: reports the reservation, so a test can compare it with
+			// what the operation and its retry actually write.
+			call_user_func( $this->operation_fault_injector, 'journal_reservation', [ 'attachment_id' => $operation['attachment_id'], 'token' => $operation['token'], 'bytes' => $reserved ] );
+		}
+		if ( $reserved > self::NAME_STABILITY_JOURNAL_BUDGET ) {
+			return [ 'code' => 'journal_budget_exceeded', 'message' => __( 'This image has too many sizes for its recovery record to be kept safely. No image was changed.', 'image-watermark' ) ];
+		}
+		if ( ! $this->set_operation_state( $operation, $operation['journal']['current']['state'], [ 'pre_operation' => $pre ] ) ) {
+			return [ 'code' => 'journal_write_failed', 'message' => __( 'Watermark recovery state could not be updated.', 'image-watermark' ) ];
+		}
+		$operation['pre_operation'] = $pre;
+		$operation['ownership'] = [];
+		$operation['ownership_uncertain'] = false;
+		$candidates = $this->name_stable_ownership_candidates( $pre );
+		if ( ! empty( $candidates ) ) {
+			$deadline = $this->operation_ownership_deadline( $operation );
+			$pass = $this->derivative_paths_ownership( $operation['attachment_id'], $candidates, $upload_dir, $deadline );
+			if ( microtime( true ) > $deadline ) {
+				return [ 'code' => 'time_budget_exhausted', 'message' => __( 'Not enough request time remained to change this image safely. No image was changed; retry the operation.', 'image-watermark' ), 'retryable' => true ];
+			}
+			$operation['ownership'] = $pass['paths'];
+			$operation['ownership_uncertain'] = $pass['uncertain'];
+		}
+		return true;
+	}
+
+	/**
+	 * Dimensions of the oriented pre-scale source, as core used them for the
+	 * upload-time sub-sizes. EXIF orientation is read from metadata only.
+	 *
+	 * @return int[]|null
+	 */
+	private function oriented_source_dimensions( $pre, $upload_dir ) {
+		if ( $pre['original_image'] === '' ) {
+			return $pre['width'] > 0 && $pre['height'] > 0 ? [ $pre['width'], $pre['height'] ] : null;
+		}
+		$directory = dirname( $pre['file'] );
+		$path = $upload_dir['basedir'] . DIRECTORY_SEPARATOR . ( $directory === '.' || $directory === '' ? '' : str_replace( '/', DIRECTORY_SEPARATOR, $directory ) . DIRECTORY_SEPARATOR ) . $pre['original_image'];
+		$dimensions = is_file( $path ) ? @getimagesize( $path ) : false;
+		if ( ! $dimensions ) {
+			return null;
+		}
+		$orientation = 0;
+		if ( function_exists( 'wp_read_image_metadata' ) ) {
+			$meta = wp_read_image_metadata( $path );
+			$orientation = is_array( $meta ) && isset( $meta['orientation'] ) ? (int) $meta['orientation'] : 0;
+		}
+		return $orientation >= 5 && $orientation <= 8 ? [ (int) $dimensions[1], (int) $dimensions[0] ] : [ (int) $dimensions[0], (int) $dimensions[1] ];
+	}
+
+	/**
+	 * Check whether the current definition produced the old file. Primary test:
+	 * expected geometry from the oriented pre-scale source. Fallback: equal fixed
+	 * axes and at most 1 px on the free axis.
+	 *
+	 * @return bool
+	 */
+	private function name_stable_definition_unchanged( $definition, $old, $new_width, $new_height, $source ) {
+		$bound_width = (int) $definition['width'];
+		$bound_height = (int) $definition['height'];
+		$crop = $definition['crop'];
+		if ( $old['width'] < 1 || $old['height'] < 1 ) {
+			return false;
+		}
+		if ( is_array( $source ) ) {
+			$expected = image_resize_dimensions( $source[0], $source[1], $bound_width, $bound_height, $crop );
+			if ( $expected && (int) $expected[4] === $old['width'] && (int) $expected[5] === $old['height'] ) {
+				return true;
+			}
+		}
+		if ( $crop ) {
+			return $old['width'] === $new_width && $old['height'] === $new_height;
+		}
+		$width_fixed = $bound_width > 0 && $old['width'] === $bound_width && $new_width === $bound_width;
+		$height_fixed = $bound_height > 0 && $old['height'] === $bound_height && $new_height === $bound_height;
+		if ( $width_fixed && ! $height_fixed ) {
+			return abs( $old['height'] - $new_height ) <= 1;
+		}
+		if ( $height_fixed && ! $width_fixed ) {
+			return abs( $old['width'] - $new_width ) <= 1;
+		}
+		return $old['width'] === $new_width && $old['height'] === $new_height;
+	}
+
+	/**
+	 * Check remap compatibility for one size; decide ownership and conflicts later.
+	 *
+	 * @return true|string
+	 */
+	private function name_stable_remap_check( $name, $old, $entry, $new_relative, $registered, $source, $upload_dir ) {
+		if ( ! isset( $registered[ $name ] ) || ! $this->name_stable_definition_unchanged( $registered[ $name ], $old, isset( $entry['width'] ) ? (int) $entry['width'] : 0, isset( $entry['height'] ) ? (int) $entry['height'] : 0, $source ) ) {
+			return 'definition_changed';
+		}
+		$mime = isset( $entry['mime-type'] ) && is_string( $entry['mime-type'] ) ? $entry['mime-type'] : (string) wp_check_filetype( $new_relative )['type'];
+		if ( $mime !== $old['mime'] || strtolower( pathinfo( $new_relative, PATHINFO_EXTENSION ) ) !== strtolower( pathinfo( $old['path'], PATHINFO_EXTENSION ) ) ) {
+			return 'mime_changed';
+		}
+		// Directory identity, not its spelling: a junction or link may name the
+		// same physical directory differently.
+		$old_directory = realpath( $upload_dir['basedir'] . DIRECTORY_SEPARATOR . str_replace( '/', DIRECTORY_SEPARATOR, dirname( $old['path'] ) ) );
+		$new_directory = realpath( $upload_dir['basedir'] . DIRECTORY_SEPARATOR . str_replace( '/', DIRECTORY_SEPARATOR, dirname( $new_relative ) ) );
+		if ( $old_directory === false || $new_directory === false || $this->ownership_reference_key( wp_normalize_path( $old_directory ) ) !== $this->ownership_reference_key( wp_normalize_path( $new_directory ) ) ) {
+			return 'directory_changed';
+		}
+		if ( ! $this->verify_operation_file( $upload_dir['basedir'] . DIRECTORY_SEPARATOR . str_replace( '/', DIRECTORY_SEPARATOR, $new_relative ) ) ) {
+			return 'remap_source_missing';
+		}
+		foreach ( $entry as $key => $value ) {
+			if ( ! in_array( $key, [ 'file', 'width', 'height', 'mime-type', 'filesize' ], true ) && strpos( (string) maybe_serialize( $value ), basename( $new_relative ) ) !== false ) {
+				return 'remap_skipped_extended_metadata';
+			}
+		}
+		return true;
+	}
+
+	/**
+	 * Find size names whose old files may carry a watermark.
+	 *
+	 * @return array{all:bool,names:string[]}
+	 */
+	private function possibly_watermarked_sizes( $operation, $selected, $flagged ) {
+		$journal = $operation['journal'];
+		$records = [ isset( $journal['current'] ) ? $journal['current'] : null, isset( $journal['recoverable_predecessor'] ) ? $journal['recoverable_predecessor'] : null ];
+		if ( ! empty( $journal['history'] ) && is_array( $journal['history'] ) ) {
+			$records = array_merge( $records, $journal['history'] );
+		}
+		$names = $selected;
+		$completed_apply = false;
+		foreach ( $records as $record ) {
+			if ( ! is_array( $record ) || ! isset( $record['type'] ) || $record['type'] !== 'apply' ) {
+				continue;
+			}
+			if ( isset( $record['state'] ) && $record['state'] === 'complete' ) {
+				$completed_apply = true;
+			}
+			foreach ( isset( $record['targets'] ) && is_array( $record['targets'] ) ? $record['targets'] : [] as $target ) {
+				if ( ! is_array( $target ) || empty( $target['aliases'] ) || ! is_array( $target['aliases'] ) || ( isset( $target['intent'] ) && $target['intent'] !== 'watermark-output' ) || ( isset( $target['state'] ) && in_array( $target['state'], [ 'pending', 'allocated' ], true ) ) ) {
+					continue;
+				}
+				foreach ( $target['aliases'] as $alias ) {
+					if ( is_string( $alias ) ) {
+						$names[] = $alias;
+					}
+				}
+			}
+		}
+		return [ 'all' => $flagged && ! $completed_apply, 'names' => array_values( array_unique( $names ) ) ];
+	}
+
+	/**
+	 * Build the name-stable plan for freshly generated metadata: remaps onto old
+	 * paths, carried-forward entries, reported sizes, and retirement candidates.
+	 * One bounded ownership pass covers every path the pre-mutation pass did not.
+	 *
+	 * @return array
+	 */
+	private function plan_name_stable_derivatives( &$operation, $generated, $upload_dir, $purpose, $options, $flagged ) {
+		$pre = $operation['pre_operation'];
+		$directory = dirname( $pre['file'] );
+		$prefix = $directory === '.' || $directory === '' ? '' : $directory . '/';
+		$registered = wp_get_registered_image_subsizes();
+		$requested = isset( $operation['requested_sizes'] ) && is_array( $operation['requested_sizes'] ) ? $operation['requested_sizes'] : null;
+		$selected = [];
+		foreach ( isset( $options['watermark_on'] ) && is_array( $options['watermark_on'] ) ? $options['watermark_on'] : [] as $size => $active ) {
+			if ( (int) $active === 1 && (string) $size !== 'full' ) {
+				$selected[] = (string) $size;
+			}
+		}
+		$possibly = $this->possibly_watermarked_sizes( $operation, $selected, $flagged );
+		$fresh = [];
+		foreach ( isset( $generated['sizes'] ) && is_array( $generated['sizes'] ) ? $generated['sizes'] : [] as $name => $entry ) {
+			if ( is_string( $name ) && is_array( $entry ) && ! empty( $entry['file'] ) && is_string( $entry['file'] ) ) {
+				$fresh[ $name ] = $prefix . $entry['file'];
+			}
+		}
+		$plan = [
+			'metadata'    => $generated,
+			'previous'    => [],
+			'regenerated' => $fresh,
+			'remaps'      => [],
+			'retire'      => [],
+			'outcomes'    => [],
+			'skipped'     => [],
+			'failed'      => [],
+			'written'     => [],
+			'partial'     => [],
+			'retired'     => [],
+			'retiring'    => [],
+			'ownership'   => isset( $operation['ownership'] ) && is_array( $operation['ownership'] ) ? $operation['ownership'] : [],
 		];
-		if ( ! $this->set_operation_state( $operation, 'metadata-commit', $details ) ) {
-			return [ 'retired' => [], 'failed' => array_keys( $candidates ), 'outcomes' => $outcomes ];
+		if ( ! empty( $pre['stale'] ) ) {
+			$plan['partial'][] = 'predecessor_map_stale';
+		}
+		$source = $this->oriented_source_dimensions( $pre, $upload_dir );
+		$pending = [];
+		$fallback = [];
+		$retained = [];
+		foreach ( $pre['sizes'] as $name => $old ) {
+			$plan['previous'][ $name ] = $old['path'];
+			if ( isset( $fresh[ $name ] ) ) {
+				$plan['written'][] = $name;
+				if ( $fresh[ $name ] === $old['path'] ) {
+					$plan['outcomes'][ $name ] = 'retained';
+					continue;
+				}
+				$check = $this->name_stable_remap_check( $name, $old, $generated['sizes'][ $name ], $fresh[ $name ], $registered, $source, $upload_dir );
+				if ( $check === true ) {
+					$pending[ $name ] = [ $old['path'], $fresh[ $name ] ];
+				} elseif ( $check === 'remap_source_missing' ) {
+					// An offloader removed the fresh file: keep the old file and its entry,
+					// so metadata never names the missing output, and report it.
+					array_pop( $plan['written'] );
+					$plan['skipped'][ $name ] = $check;
+					$plan['partial'][] = $check;
+					$retained[ $name ] = 'retained_remap_source_missing';
+				} else {
+					// Changed definitions keep the 2.0.16 handling of the old path.
+					if ( $check === 'remap_skipped_extended_metadata' ) {
+						$plan['skipped'][ $name ] = $check;
+					}
+					$fallback[ $name ] = $old['path'];
+				}
+				continue;
+			}
+			if ( ! isset( $registered[ $name ] ) ) {
+				if ( $flagged ) {
+					$plan['retire'][ $old['path'] ] = [ 'key' => $name, 'reason' => 'retire_size_gone' ];
+				} else {
+					$plan['outcomes'][ $name ] = 'left_unreconciled';
+				}
+				continue;
+			}
+			$watermarked = $possibly['all'] || in_array( $name, $possibly['names'], true );
+			$definition = $registered[ $name ];
+			if ( ! image_resize_dimensions( $pre['width'], $pre['height'], (int) $definition['width'], (int) $definition['height'], $definition['crop'] ) ) {
+				$plan['skipped'][ $name ] = 'size_not_producible';
+				if ( $watermarked ) {
+					$plan['retire'][ $old['path'] ] = [ 'key' => $name, 'reason' => 'retire_not_producible' ];
+				} else {
+					$retained[ $name ] = 'retained_not_producible';
+				}
+				continue;
+			}
+			if ( is_array( $requested ) && ! in_array( $name, $requested, true ) ) {
+				$plan['skipped'][ $name ] = 'size_filtered';
+				if ( $purpose === 'remove' && $watermarked ) {
+					$plan['retire'][ $old['path'] ] = [ 'key' => $name, 'reason' => 'retire_filtered' ];
+				} else {
+					$retained[ $name ] = 'retained_filtered';
+				}
+				continue;
+			}
+			$plan['failed'][] = $name;
+			$plan['partial'][] = 'size_generation_failed';
+			$retained[ $name ] = 'retained_generation_failed';
+		}
+		// Sizes registered since the pre-operation snapshot were written too.
+		foreach ( array_keys( $fresh ) as $name ) {
+			if ( ! isset( $pre['sizes'][ $name ] ) ) {
+				$plan['written'][] = $name;
+			}
 		}
 
-		$previously_retired = ! empty( $operation['journal']['recoverable_predecessor']['derivative_recovery']['retired'] ) && is_array( $operation['journal']['recoverable_predecessor']['derivative_recovery']['retired'] ) ? $operation['journal']['recoverable_predecessor']['derivative_recovery']['retired'] : [];
-		$previously_retiring = ! empty( $operation['journal']['recoverable_predecessor']['derivative_recovery']['retiring'] ) && is_array( $operation['journal']['recoverable_predecessor']['derivative_recovery']['retiring'] ) ? $operation['journal']['recoverable_predecessor']['derivative_recovery']['retiring'] : [];
-		$retired = [];
-		$retiring = [];
-		$failed = [];
-		foreach ( $candidates as $name => $relative ) {
-			$path = $upload_dir['basedir'] . DIRECTORY_SEPARATOR . str_replace( '/', DIRECTORY_SEPARATOR, $relative );
-			if ( ( in_array( $relative, $previously_retired, true ) || in_array( $relative, $previously_retiring, true ) ) && ! file_exists( $path ) ) {
-				$retired[] = $relative;
-				$details['derivative_recovery']['outcomes'][ $name ] = 'retired_predecessor';
-				$details['derivative_recovery']['retired'] = $retired;
-				if ( ! $this->set_operation_state( $operation, 'metadata-commit', $details ) ) {
-					$failed[] = $name;
+		$needed = array_keys( $plan['retire'] );
+		foreach ( $pending as $paths ) {
+			$needed[] = $paths[0];
+			$needed[] = $paths[1];
+		}
+		foreach ( $fallback as $path ) {
+			$needed[] = $path;
+		}
+		foreach ( $pre['candidates'] as $paths ) {
+			$needed = array_merge( $needed, $paths );
+		}
+		$unknown = array_values( array_diff( array_unique( $needed ), array_keys( $plan['ownership'] ) ) );
+		if ( ! empty( $unknown ) ) {
+			$pass = ! empty( $operation['ownership_uncertain'] ) ? [ 'paths' => array_fill_keys( $unknown, 'uncertain' ) ] : $this->derivative_paths_ownership( $operation['attachment_id'], $unknown, $upload_dir, $this->operation_ownership_deadline( $operation ) );
+			$plan['ownership'] = array_merge( $plan['ownership'], $pass['paths'] );
+		}
+
+		$by_target = [];
+		foreach ( $pending as $name => $paths ) {
+			$by_target[ $paths[0] ][ $paths[1] ][] = $name;
+		}
+		foreach ( $by_target as $target => $sources ) {
+			$names = [];
+			foreach ( $sources as $source_names ) {
+				$names = array_merge( $names, $source_names );
+			}
+			$other_fresh = array_diff_key( $fresh, array_flip( $names ) );
+			if ( count( $sources ) > 1 || in_array( $target, $other_fresh, true ) ) {
+				foreach ( $names as $name ) {
+					$plan['skipped'][ $name ] = 'remap_conflict';
+					$fallback[ $name ] = $target;
 				}
 				continue;
 			}
-			// The recorded old metadata path must still resolve under uploads before
-			// it can be deleted. Never infer ownership from a matching filename.
-			$identity = $this->operation_path_identity( $path, $upload_dir );
-			if ( $identity === false || $identity['relative'] !== $relative ) {
-				$failed[] = $name;
-				continue;
-			}
-			$ownership = $this->derivative_path_ownership( $operation['attachment_id'], $path, $identity, $upload_dir );
+			$from = key( $sources );
+			$ownership = isset( $plan['ownership'][ $target ] ) ? $plan['ownership'][ $target ] : 'uncertain';
 			if ( $ownership !== 'exclusive' ) {
-				$details['derivative_recovery']['outcomes'][ $name ] = $ownership === 'shared' ? 'retained_shared' : 'retained_ownership_uncertain';
-				if ( ! $this->set_operation_state( $operation, 'metadata-commit', $details ) ) {
+				foreach ( $names as $name ) {
+					$plan['skipped'][ $name ] = $ownership === 'shared' ? 'remap_skipped_shared' : 'ownership_uncertain';
+					$plan['outcomes'][ $name ] = $ownership === 'shared' ? 'retained_shared' : 'retained_ownership_uncertain';
+				}
+				if ( $ownership !== 'shared' ) {
+					$plan['partial'][] = 'ownership_uncertain';
+				}
+				continue;
+			}
+			$plan['remaps'][ $target ] = [
+				'names'    => $names,
+				'from'     => $from,
+				'to'       => $target,
+				'state'    => 'planned',
+				// Only a reapply renders selected sizes onto their old paths; remove
+				// copies every fresh clean output.
+				'selected' => $purpose === 'reapply' && count( array_intersect( $names, $selected ) ) > 0,
+			];
+			foreach ( $names as $name ) {
+				$plan['metadata']['sizes'][ $name ]['file'] = basename( $target );
+				$plan['outcomes'][ $name ] = 'remapped';
+			}
+			$plan['retire'][ $from ] = [ 'key' => $names[0] . '#source', 'reason' => 'retire_remapped_source' ];
+		}
+		foreach ( $fallback as $name => $path ) {
+			if ( ! isset( $plan['retire'][ $path ] ) ) {
+				$plan['retire'][ $path ] = [ 'key' => $name, 'reason' => 'retire_replaced' ];
+			}
+		}
+		foreach ( $pre['candidates'] as $name => $paths ) {
+			foreach ( $paths as $path ) {
+				if ( ! isset( $plan['retire'][ $path ] ) ) {
+					$plan['retire'][ $path ] = [ 'key' => $name . '#intermediate', 'reason' => 'retire_intermediate' ];
+				}
+			}
+		}
+		foreach ( $retained as $name => $outcome ) {
+			$old = $pre['sizes'][ $name ];
+			$path = $upload_dir['basedir'] . DIRECTORY_SEPARATOR . str_replace( '/', DIRECTORY_SEPARATOR, $old['path'] );
+			$plan['outcomes'][ $name ] = $outcome;
+			if ( is_file( $path ) ) {
+				$plan['metadata']['sizes'][ $name ] = [ 'file' => basename( $old['path'] ), 'width' => $old['width'], 'height' => $old['height'], 'mime-type' => $old['mime'], 'filesize' => (int) filesize( $path ) ];
+			}
+		}
+		if ( $pre['original_image'] !== '' && is_file( $upload_dir['basedir'] . DIRECTORY_SEPARATOR . ( $prefix === '' ? '' : str_replace( '/', DIRECTORY_SEPARATOR, $prefix ) ) . $pre['original_image'] ) ) {
+			$plan['metadata']['original_image'] = $pre['original_image'];
+		}
+		return $plan;
+	}
+
+	/** @return array */
+	private function name_stable_remap_journal( $remaps ) {
+		$entries = [];
+		foreach ( $remaps as $remap ) {
+			$entries[] = array_intersect_key( $remap, array_flip( [ 'names', 'from', 'to', 'state', 'size', 'hash', 'selected' ] ) );
+		}
+		return $entries;
+	}
+
+	/** @return bool */
+	private function write_name_stable_recovery( &$operation, $plan ) {
+		// derivative_recovery is rewritten whole, so remap is always carried forward.
+		return $this->set_operation_state( $operation, 'metadata-commit', [
+			'derivative_recovery' => [
+				'previous'    => $plan['previous'],
+				'regenerated' => $plan['regenerated'],
+				'outcomes'    => $plan['outcomes'],
+				'retired'     => $plan['retired'],
+				'retiring'    => $plan['retiring'],
+				'remap'       => $this->name_stable_remap_journal( $plan['remaps'] ),
+			],
+		] );
+	}
+
+	/** @return string uploads-relative remap stage path derived from token and target. */
+	private function name_stable_remap_stage_relative( $to, $token ) {
+		$directory = dirname( $to );
+		return ( $directory === '.' || $directory === '' ? '' : $directory . '/' ) . basename( $this->operation_stage_path( $to, $token, 'remap-' . $to ) );
+	}
+
+	/** @return array[] Journal-proven remap stage artifacts of one record. */
+	private function name_stable_remap_artifacts( $record ) {
+		$artifacts = [];
+		if ( ! is_array( $record ) || empty( $record['token'] ) || ! is_string( $record['token'] ) || empty( $record['derivative_recovery']['remap'] ) || ! $this->is_valid_name_stable_remap( $record['derivative_recovery']['remap'] ) ) {
+			return $artifacts;
+		}
+		foreach ( $record['derivative_recovery']['remap'] as $entry ) {
+			if ( ! empty( $entry['selected'] ) ) {
+				continue;
+			}
+			$artifacts[] = [ 'target' => $entry['to'], 'stage' => $this->name_stable_remap_stage_relative( $entry['to'], $record['token'] ), 'root' => 'uploads' ];
+		}
+		return $artifacts;
+	}
+
+	/**
+	 * Copy one fresh clean output to a token-owned stage beside its old path and
+	 * promote it there for an unselected size.
+	 *
+	 * @return bool
+	 */
+	private function execute_name_stable_remap( &$operation, &$plan, $to, $upload_dir, $options ) {
+		$remap = $plan['remaps'][ $to ];
+		$context = [ 'attachment_id' => $operation['attachment_id'], 'token' => $operation['token'], 'target' => $to ];
+		$source = $this->resolve_upload_artifact_path( $remap['from'] );
+		$target = $this->resolve_upload_artifact_path( $remap['to'] );
+		$stage_relative = $this->name_stable_remap_stage_relative( $remap['to'], $operation['token'] );
+		$stage = $this->resolve_upload_artifact_path( $stage_relative );
+		if ( $source === false || $target === false || $stage === false || $stage['parent'] !== $target['parent'] || ! $this->verify_operation_file( $source['path'] ) ) {
+			return false;
+		}
+		$stage_path = $stage['path'];
+		$plan['remaps'][ $to ]['state'] = 'allocated';
+		if ( ! $this->write_name_stable_recovery( $operation, $plan ) || ! $this->copy_file( $source['path'], $stage_path, 'stage', $operation['attachment_id'], $options ) || ! $this->verify_operation_file( $stage_path ) ) {
+			$this->cleanup_lost_upload_artifact( $stage_path, $operation['token'], '.iw-stage-' );
+			return false;
+		}
+		$plan['remaps'][ $to ]['size'] = (int) filesize( $stage_path );
+		$plan['remaps'][ $to ]['hash'] = hash_file( 'sha256', $stage_path );
+		$plan['remaps'][ $to ]['state'] = 'staged';
+		if ( ! $this->write_name_stable_recovery( $operation, $plan ) ) {
+			$this->cleanup_lost_upload_artifact( $stage_path, $operation['token'], '.iw-stage-' );
+			return false;
+		}
+		if ( $this->should_inject_operation_fault( 'after_remap_stage', $context ) ) {
+			return false;
+		}
+		// phpcs:ignore WordPress.WP.AlternativeFunctions.rename_rename -- Same-filesystem rename is the accepted atomic staged promotion.
+		if ( ! $this->renew_operation_lock( $operation ) || ( $stage = $this->resolve_upload_artifact_path( $stage_relative ) ) === false || ( $target = $this->resolve_upload_artifact_path( $remap['to'] ) ) === false || ! @rename( $stage['path'], $target['path'] ) || ! $this->verify_operation_file( $target['path'] ) || (string) filesize( $target['path'] ) !== (string) $plan['remaps'][ $to ]['size'] || hash_file( 'sha256', $target['path'] ) !== $plan['remaps'][ $to ]['hash'] ) {
+			$this->cleanup_lost_upload_artifact( $stage_path, $operation['token'], '.iw-stage-' );
+			return false;
+		}
+		if ( $this->should_inject_operation_fault( 'after_remap_promote', $context ) ) {
+			return false;
+		}
+		$plan['remaps'][ $to ]['state'] = 'promoted';
+		return $this->write_name_stable_recovery( $operation, $plan );
+	}
+
+	/**
+	 * Reference set of one attachment's metadata: textual uploads-relative keys
+	 * plus the canonical identity of every existing referenced file, so a
+	 * differently named link to a file counts as a reference to it.
+	 *
+	 * @return array{keys:array<string,bool>,identities:array<string,bool>}
+	 */
+	private function name_stable_references( $metadata, $upload_dir ) {
+		$references = [ 'keys' => [], 'identities' => [] ];
+		if ( ! is_array( $metadata ) || empty( $metadata['file'] ) || ! is_string( $metadata['file'] ) ) {
+			return $references;
+		}
+		$directory = dirname( $metadata['file'] );
+		$prefix = $directory === '.' || $directory === '' ? '' : $directory . '/';
+		$paths = [ $metadata['file'] ];
+		if ( ! empty( $metadata['original_image'] ) && is_string( $metadata['original_image'] ) ) {
+			$paths[] = $prefix . $metadata['original_image'];
+		}
+		foreach ( isset( $metadata['sizes'] ) && is_array( $metadata['sizes'] ) ? $metadata['sizes'] : [] as $size ) {
+			if ( is_array( $size ) && ! empty( $size['file'] ) && is_string( $size['file'] ) ) {
+				$paths[] = $prefix . $size['file'];
+			}
+		}
+		foreach ( $paths as $path ) {
+			$references['keys'][ $this->ownership_reference_key( $path ) ] = true;
+			$identity = $this->operation_path_identity( $upload_dir['basedir'] . DIRECTORY_SEPARATOR . str_replace( '/', DIRECTORY_SEPARATOR, $path ), $upload_dir );
+			if ( $identity !== false ) {
+				$references['identities'][ $identity['identity'] ] = true;
+			}
+		}
+		return $references;
+	}
+
+	/** @return bool */
+	private function name_stable_is_referenced( $references, $relative, $upload_dir ) {
+		if ( isset( $references['keys'][ $this->ownership_reference_key( $relative ) ] ) ) {
+			return true;
+		}
+		$identity = $this->operation_path_identity( $upload_dir['basedir'] . DIRECTORY_SEPARATOR . str_replace( '/', DIRECTORY_SEPARATOR, $relative ), $upload_dir );
+		return $identity !== false && isset( $references['identities'][ $identity['identity'] ] );
+	}
+
+	/**
+	 * Retire planned paths that no reference of this attachment names, only under
+	 * an exclusive ownership proof. Before the final metadata
+	 * commit, a path the stored metadata still names (core's intermediate writes
+	 * name the fresh outputs) is deferred until after that commit, so a refused or
+	 * interrupted commit never leaves stored metadata naming a deleted file.
+	 *
+	 * @param array|null $stored Currently stored metadata, or null after the final commit.
+	 * @return string[] Size names whose retirement failed.
+	 */
+	private function retire_name_stable_paths( &$operation, &$plan, $upload_dir, $stored = null ) {
+		$references = $this->name_stable_references( $plan['metadata'], $upload_dir );
+		$stored_references = is_array( $stored ) ? $this->name_stable_references( $stored, $upload_dir ) : null;
+		if ( $stored === null ) {
+			// After the final commit, the durable value is authoritative: a metadata
+			// filter may have added references the plan does not know about.
+			$durable = $this->name_stable_references( wp_get_attachment_metadata( $operation['attachment_id'], true ), $upload_dir );
+			$references['keys'] = array_merge( $references['keys'], $durable['keys'] );
+			$references['identities'] = array_merge( $references['identities'], $durable['identities'] );
+		}
+		$predecessor = isset( $operation['journal']['recoverable_predecessor']['derivative_recovery'] ) && is_array( $operation['journal']['recoverable_predecessor']['derivative_recovery'] ) ? $operation['journal']['recoverable_predecessor']['derivative_recovery'] : [];
+		$previously = array_merge( isset( $predecessor['retired'] ) && is_array( $predecessor['retired'] ) ? $predecessor['retired'] : [], isset( $predecessor['retiring'] ) && is_array( $predecessor['retiring'] ) ? $predecessor['retiring'] : [] );
+		$failed = [];
+		if ( ! isset( $plan['deferred'] ) ) {
+			$plan['deferred'] = [];
+		}
+		foreach ( $plan['retire'] as $relative => $item ) {
+			$name = preg_replace( '/#[a-z]+$/', '', $item['key'] );
+			if ( $this->name_stable_is_referenced( $references, $relative, $upload_dir ) ) {
+				$plan['outcomes'][ $item['key'] ] = 'retained_referenced';
+				continue;
+			}
+			if ( $stored_references !== null && $this->name_stable_is_referenced( $stored_references, $relative, $upload_dir ) ) {
+				$plan['deferred'][ $relative ] = $item;
+				$plan['outcomes'][ $item['key'] ] = 'retire_after_commit';
+				if ( ! $this->write_name_stable_recovery( $operation, $plan ) ) {
 					$failed[] = $name;
 				}
 				continue;
 			}
-			$retiring[] = $relative;
-			$details['derivative_recovery']['retiring'] = $retiring;
-			if ( ! $this->set_operation_state( $operation, 'metadata-commit', $details ) ) {
+			$path = $upload_dir['basedir'] . DIRECTORY_SEPARATOR . str_replace( '/', DIRECTORY_SEPARATOR, $relative );
+			if ( ! file_exists( $path ) ) {
+				if ( in_array( $relative, $previously, true ) ) {
+					$plan['retired'][] = $relative;
+					$plan['outcomes'][ $item['key'] ] = 'retired_predecessor';
+					if ( ! $this->write_name_stable_recovery( $operation, $plan ) ) {
+						$failed[] = $name;
+					}
+				} else {
+					$plan['outcomes'][ $item['key'] ] = 'absent';
+				}
+				continue;
+			}
+			// The recorded path must still resolve under uploads before it can be
+			// deleted. Never infer ownership from a matching filename.
+			$identity = $this->operation_path_identity( $path, $upload_dir );
+			// A path spelled through an equivalent directory (a junction or a
+			// directory link inside uploads) is the same file; a leaf that is itself
+			// a link, or that resolves to another name, is never followed.
+			if ( $identity === false || ( $identity['relative'] !== $relative && ( is_link( $path ) || $this->ownership_reference_key( basename( $identity['relative'] ) ) !== $this->ownership_reference_key( basename( $relative ) ) ) ) ) {
 				$failed[] = $name;
 				continue;
 			}
-			// phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink -- Retire only a lock-owned obsolete derivative after promotion.
-			if ( $this->should_inject_operation_fault( 'derivative_retire', [ 'attachment_id' => $operation['attachment_id'], 'token' => $operation['token'], 'target' => $relative ] ) || ! $this->renew_operation_lock( $operation ) || ! @unlink( $path ) ) {
+			$ownership = isset( $plan['ownership'][ $relative ] ) ? $plan['ownership'][ $relative ] : 'uncertain';
+			if ( $ownership !== 'exclusive' ) {
+				$plan['outcomes'][ $item['key'] ] = $ownership === 'shared' ? 'retained_shared' : 'retained_ownership_uncertain';
+				if ( $ownership !== 'shared' ) {
+					$plan['partial'][] = 'ownership_uncertain';
+					if ( ! isset( $plan['skipped'][ $name ] ) ) {
+						$plan['skipped'][ $name ] = 'ownership_uncertain';
+					}
+				}
+				if ( ! $this->write_name_stable_recovery( $operation, $plan ) ) {
+					$failed[] = $name;
+				}
+				continue;
+			}
+			$plan['outcomes'][ $item['key'] ] = $item['reason'];
+			$plan['retiring'][] = $relative;
+			if ( ! $this->write_name_stable_recovery( $operation, $plan ) ) {
 				$failed[] = $name;
 				continue;
 			}
-			if ( $this->should_inject_operation_fault( 'after_derivative_retire', [ 'attachment_id' => $operation['attachment_id'], 'token' => $operation['token'], 'target' => $relative ] ) ) {
+			$context = [ 'attachment_id' => $operation['attachment_id'], 'token' => $operation['token'], 'target' => $relative ];
+			// phpcs:ignore WordPress.WP.AlternativeFunctions.unlink_unlink -- Retire only a lock-owned obsolete derivative proven exclusive and unreferenced.
+			if ( ( $item['reason'] === 'retire_remapped_source' && $this->should_inject_operation_fault( 'before_remap_source_retire', $context ) ) || $this->should_inject_operation_fault( 'derivative_retire', $context ) || ! $this->renew_operation_lock( $operation ) || ! @unlink( $path ) ) {
 				$failed[] = $name;
 				continue;
 			}
-			$retired[] = $relative;
-			$details['derivative_recovery']['retired'] = $retired;
-			if ( ! $this->set_operation_state( $operation, 'metadata-commit', $details ) ) {
+			if ( $this->should_inject_operation_fault( 'after_derivative_retire', $context ) ) {
+				$failed[] = $name;
+				continue;
+			}
+			$plan['retired'][] = $relative;
+			if ( ! $this->write_name_stable_recovery( $operation, $plan ) ) {
 				$failed[] = $name;
 				break;
 			}
 		}
+		return array_values( array_unique( $failed ) );
+	}
 
-		return [ 'retired' => $retired, 'failed' => $failed, 'outcomes' => $outcomes ];
+	/**
+	 * Retire what the pre-commit pass deferred, once the final metadata is
+	 * durable and no longer names those paths.
+	 *
+	 * @return string[] Size names whose retirement failed.
+	 */
+	private function retire_deferred_name_stable_paths( &$operation, &$plan, $upload_dir ) {
+		if ( empty( $plan['deferred'] ) ) {
+			return [];
+		}
+		$plan['retire'] = $plan['deferred'];
+		$plan['deferred'] = [];
+		return $this->retire_name_stable_paths( $operation, $plan, $upload_dir );
+	}
+
+	/**
+	 * Promote the unselected remaps, then retire obsolete paths. Selected remaps
+	 * were already rendered onto their old paths by the watermark staging.
+	 *
+	 * @return string[] Size names that failed.
+	 */
+	private function execute_name_stable_plan( &$operation, &$plan, $upload_dir, $options ) {
+		if ( ! $this->write_name_stable_recovery( $operation, $plan ) ) {
+			return array_keys( $plan['previous'] ) ?: [ 'all' ];
+		}
+		$failed = [];
+		foreach ( array_keys( $plan['remaps'] ) as $to ) {
+			if ( ! empty( $plan['remaps'][ $to ]['selected'] ) ) {
+				$plan['remaps'][ $to ]['state'] = 'promoted';
+				continue;
+			}
+			if ( ! $this->execute_name_stable_remap( $operation, $plan, $to, $upload_dir, $options ) ) {
+				$failed = array_merge( $failed, $plan['remaps'][ $to ]['names'] );
+			}
+		}
+		if ( ! empty( $failed ) ) {
+			return $failed;
+		}
+		$stored = wp_get_attachment_metadata( $operation['attachment_id'], true );
+		return $this->retire_name_stable_paths( $operation, $plan, $upload_dir, is_array( $stored ) ? $stored : [] );
+	}
+
+	/** @return bool */
+	private function name_stable_identity_changed( $attachment_id, $generated, $pre ) {
+		$attached = get_post_meta( $attachment_id, '_wp_attached_file', true );
+		if ( ! is_array( $generated ) || empty( $generated['file'] ) || $generated['file'] !== $pre['file'] || $attached !== $pre['file'] ) {
+			return true;
+		}
+		if ( $pre['width'] > 0 && $pre['height'] > 0 && ( ! isset( $generated['width'], $generated['height'] ) || (int) $generated['width'] !== $pre['width'] || (int) $generated['height'] !== $pre['height'] ) ) {
+			return true;
+		}
+		if ( $pre['mime'] !== '' && (string) wp_check_filetype( $generated['file'] )['type'] !== $pre['mime'] ) {
+			return true;
+		}
+		return ! $this->name_stable_main_file_intact( $pre, wp_upload_dir() );
+	}
+
+	/**
+	 * The main file itself still has the pre-operation geometry and format. A
+	 * callback may resize or convert it in place while returning metadata that
+	 * says otherwise, or nothing at all. Bytes may differ (an optimizer may
+	 * recompress it); identity is path, name, dimensions, and format.
+	 *
+	 * @return bool
+	 */
+	private function name_stable_main_file_intact( $pre, $upload_dir ) {
+		$path = $upload_dir['basedir'] . DIRECTORY_SEPARATOR . str_replace( '/', DIRECTORY_SEPARATOR, $pre['file'] );
+		clearstatcache( true, $path );
+		$actual = is_file( $path ) ? @getimagesize( $path ) : false;
+		if ( ! $actual ) {
+			return false;
+		}
+		return ( $pre['width'] < 1 || (int) $actual[0] === $pre['width'] ) && ( $pre['height'] < 1 || (int) $actual[1] === $pre['height'] ) && ( $pre['mime'] === '' || $actual['mime'] === $pre['mime'] );
+	}
+
+	/**
+	 * If another filter changed the main file's identity, restore
+	 * metadata and the attached file to pre_operation, then retire the variant and
+	 * its sub-sizes once nothing of this attachment references them.
+	 *
+	 * @return array{committed:bool,plan:array}
+	 */
+	private function rollback_name_stable_identity( &$operation, $generated, $upload_dir, $clean_source, $options ) {
+		$pre = $operation['pre_operation'];
+		// A callback changed the main file in place: put the clean source back first.
+		if ( ! $this->name_stable_main_file_intact( $pre, $upload_dir ) && ( ! $this->stage_copy_and_promote( $operation, $clean_source, $upload_dir['basedir'] . DIRECTORY_SEPARATOR . str_replace( '/', DIRECTORY_SEPARATOR, $pre['file'] ), 'identity-restore', $options ) || ! $this->name_stable_main_file_intact( $pre, $upload_dir ) ) ) {
+			return [ 'committed' => false, 'plan' => [] ];
+		}
+		$directory = dirname( $pre['file'] );
+		$prefix = $directory === '.' || $directory === '' ? '' : $directory . '/';
+		$restored = is_array( $generated ) ? $generated : [];
+		$restored['file'] = $pre['file'];
+		if ( $pre['width'] > 0 && $pre['height'] > 0 ) {
+			$restored['width'] = $pre['width'];
+			$restored['height'] = $pre['height'];
+		}
+		$restored['sizes'] = [];
+		foreach ( $pre['sizes'] as $name => $size ) {
+			$path = $upload_dir['basedir'] . DIRECTORY_SEPARATOR . str_replace( '/', DIRECTORY_SEPARATOR, $size['path'] );
+			if ( is_file( $path ) ) {
+				$restored['sizes'][ $name ] = [ 'file' => basename( $size['path'] ), 'width' => $size['width'], 'height' => $size['height'], 'mime-type' => $size['mime'], 'filesize' => (int) filesize( $path ) ];
+			}
+		}
+		unset( $restored['original_image'] );
+		if ( $pre['original_image'] !== '' && is_file( $upload_dir['basedir'] . DIRECTORY_SEPARATOR . str_replace( '/', DIRECTORY_SEPARATOR, $prefix ) . $pre['original_image'] ) ) {
+			$restored['original_image'] = $pre['original_image'];
+		}
+		$plan = [ 'metadata' => $restored, 'previous' => [], 'regenerated' => [], 'remaps' => [], 'retire' => [], 'outcomes' => [], 'skipped' => [], 'failed' => [], 'written' => [], 'partial' => [], 'retired' => [], 'retiring' => [], 'ownership' => [] ];
+		foreach ( $pre['sizes'] as $name => $size ) {
+			$plan['previous'][ $name ] = $size['path'];
+		}
+		if ( get_post_meta( $operation['attachment_id'], '_wp_attached_file', true ) !== $pre['file'] ) {
+			update_post_meta( $operation['attachment_id'], '_wp_attached_file', $pre['file'] );
+		}
+		$committed = get_post_meta( $operation['attachment_id'], '_wp_attached_file', true ) === $pre['file'] && $this->commit_regenerated_metadata( $operation['attachment_id'], $restored );
+		$this->set_regenerated_metadata_commit_state( $operation, $restored, $committed ? 'committed' : 'refused' );
+		if ( ! $committed ) {
+			return [ 'committed' => false, 'plan' => $plan ];
+		}
+		$plan['metadata'] = $restored;
+		if ( is_array( $generated ) && ! empty( $generated['file'] ) && is_string( $generated['file'] ) && $generated['file'] !== $pre['file'] && $this->normalize_operation_relative_path( $generated['file'] ) === $generated['file'] ) {
+			$plan['retire'][ $generated['file'] ] = [ 'key' => 'full#variant', 'reason' => 'retire_identity_variant' ];
+		}
+		$generated_directory = is_array( $generated ) && ! empty( $generated['file'] ) && is_string( $generated['file'] ) ? dirname( $generated['file'] ) : $directory;
+		$generated_prefix = $generated_directory === '.' || $generated_directory === '' ? '' : $generated_directory . '/';
+		foreach ( is_array( $generated ) && isset( $generated['sizes'] ) && is_array( $generated['sizes'] ) ? $generated['sizes'] : [] as $name => $entry ) {
+			$relative = is_array( $entry ) && ! empty( $entry['file'] ) && is_string( $entry['file'] ) ? $this->normalize_operation_relative_path( $generated_prefix . $entry['file'] ) : false;
+			if ( $relative !== false && ! isset( $plan['retire'][ $relative ] ) ) {
+				$plan['retire'][ $relative ] = [ 'key' => (string) $name . '#source', 'reason' => 'retire_identity_variant' ];
+			}
+		}
+		$plan['ownership'] = $this->derivative_paths_ownership( $operation['attachment_id'], array_keys( $plan['retire'] ), $upload_dir, $this->operation_ownership_deadline( $operation ) )['paths'];
+		$this->retire_name_stable_paths( $operation, $plan, $upload_dir );
+		return [ 'committed' => true, 'plan' => $plan ];
+	}
+
+	/**
+	 * Watermark target groups of a name-stable reapply. A remapped selected size
+	 * targets its old path and renders from its fresh clean output, so the old
+	 * path never holds clean bytes while the flag is set.
+	 *
+	 * @return array|false
+	 */
+	private function name_stable_target_groups( $options, $plan, $original_file, $upload_dir ) {
+		$metadata = $plan['metadata'];
+		$directory = dirname( $metadata['file'] );
+		$base = $upload_dir['basedir'] . DIRECTORY_SEPARATOR . ( $directory === '.' || $directory === '' ? '' : str_replace( '/', DIRECTORY_SEPARATOR, $directory ) . DIRECTORY_SEPARATOR );
+		$groups = [];
+		foreach ( isset( $options['watermark_on'] ) && is_array( $options['watermark_on'] ) ? $options['watermark_on'] : [] as $size => $active ) {
+			if ( (int) $active !== 1 ) {
+				continue;
+			}
+			$size = (string) $size;
+			if ( $size === 'full' ) {
+				$destination = $original_file;
+				$source = $original_file;
+			} elseif ( isset( $metadata['sizes'][ $size ]['file'], $plan['regenerated'][ $size ] ) && is_string( $metadata['sizes'][ $size ]['file'] ) ) {
+				// Only a freshly generated clean output is ever rendered. A retained old
+				// file (filtered, failed, or kept because its fresh output went missing)
+				// is left exactly as it was, so its watermark is never stacked.
+				$destination = $base . $metadata['sizes'][ $size ]['file'];
+				$source = null;
+				foreach ( $plan['remaps'] as $remap ) {
+					if ( ! empty( $remap['selected'] ) && in_array( $size, $remap['names'], true ) ) {
+						$source = $upload_dir['basedir'] . DIRECTORY_SEPARATOR . str_replace( '/', DIRECTORY_SEPARATOR, $remap['from'] );
+					}
+				}
+				if ( $source === null ) {
+					if ( $this->ownership_reference_key( ( $directory === '.' || $directory === '' ? '' : $directory . '/' ) . $metadata['sizes'][ $size ]['file'] ) !== $this->ownership_reference_key( $plan['regenerated'][ $size ] ) ) {
+						continue;
+					}
+					$source = $destination;
+				}
+			} else {
+				continue;
+			}
+			if ( ! is_file( $source ) ) {
+				continue;
+			}
+			$identity = $this->operation_path_identity( $destination, $upload_dir );
+			if ( $identity === false ) {
+				$relative = $this->operation_destination_relative_path( $destination, $upload_dir );
+				if ( $relative === false || $source === $destination ) {
+					return false;
+				}
+				$identity = [ 'relative' => $relative, 'identity' => 'missing:' . $this->ownership_reference_key( $relative ) ];
+			}
+			if ( ! isset( $groups[ $identity['identity'] ] ) ) {
+				$groups[ $identity['identity'] ] = [ 'path' => $destination, 'source' => $source, 'target' => $identity['relative'], 'aliases' => [] ];
+			}
+			$groups[ $identity['identity'] ]['aliases'][] = $size;
+		}
+		return count( $groups ) > 50 ? false : $groups;
+	}
+
+	/** @return array[] Last-operation skipped entries of a plan. */
+	private function name_stable_skipped_sizes( $plan ) {
+		$skipped = [];
+		foreach ( $plan['skipped'] as $name => $code ) {
+			$skipped[] = [ 'name' => $name, 'code' => $code ];
+		}
+		return $skipped;
+	}
+
+	/** @return string The most significant partial code of a plan, or ''. */
+	private function name_stable_partial_code( $plan ) {
+		foreach ( [ 'size_generation_failed', 'remap_source_missing', 'ownership_uncertain', 'predecessor_map_stale' ] as $code ) {
+			if ( in_array( $code, $plan['partial'], true ) ) {
+				return $code;
+			}
+		}
+		return '';
+	}
+
+	/** @return string */
+	private function name_stable_partial_message( $code, $purpose ) {
+		switch ( $code ) {
+			case 'main_identity_changed':
+				return $purpose === 'reapply'
+					? __( 'Regeneration would have renamed or converted the main image file, so its previous file name and metadata were restored. Some selected image sizes may no longer be watermarked; apply the watermark again after resolving the conversion.', 'image-watermark' )
+					: __( 'Regeneration would have renamed or converted the main image file, so its previous file name and metadata were restored. Previous image sizes were kept; retry the removal after resolving the conversion.', 'image-watermark' );
+			case 'size_generation_failed':
+				return __( 'Some image sizes could not be regenerated, so their previous files were kept. Retry the operation.', 'image-watermark' );
+			case 'remap_source_missing':
+				return __( 'Some regenerated image sizes were missing locally before they could take their previous file names, so the previous files were kept.', 'image-watermark' );
+			case 'predecessor_map_stale':
+				return __( 'The interrupted operation no longer matched this image, so the previous size file names could not be restored.', 'image-watermark' );
+			case 'ownership_uncertain':
+			default:
+				return __( 'Some previous image size files could not be proven to belong only to this image, so they were left in place.', 'image-watermark' );
+		}
+	}
+
+	/**
+	 * Internal: big-image threshold suppression scoped to one guarded generation
+	 * of the operated attachment only. Not a public extension point.
+	 *
+	 * @return int|false
+	 */
+	public function filter_guarded_generation_threshold( $threshold, $imagesize = [], $file = '', $attachment_id = 0 ) {
+		return is_array( $this->guarded_generation ) && (int) $attachment_id === (int) $this->guarded_generation['attachment_id'] ? false : $threshold;
+	}
+
+	/**
+	 * Internal: removes the output mapping for the main file's own MIME type while
+	 * a guarded generation runs. The filter has no attachment argument, so this is
+	 * scoped to that call's time window in this request.
+	 *
+	 * @return array
+	 */
+	public function filter_guarded_generation_output_format( $formats, $filename = null, $mime_type = '' ) {
+		if ( is_array( $this->guarded_generation ) && is_array( $formats ) && $this->guarded_generation['mime'] !== '' ) {
+			unset( $formats[ $this->guarded_generation['mime'] ] );
+		}
+		return $formats;
+	}
+
+	/**
+	 * Internal: observes, without changing, the size list core was finally asked
+	 * to create, so a filtered size is distinguished from a failed one.
+	 *
+	 * @return array
+	 */
+	public function observe_guarded_generation_sizes( $new_sizes, $image_meta = [], $attachment_id = 0 ) {
+		if ( is_array( $this->guarded_generation ) && (int) $attachment_id === (int) $this->guarded_generation['attachment_id'] && is_array( $new_sizes ) ) {
+			$this->guarded_generation['requested'] = array_map( 'strval', array_keys( $new_sizes ) );
+		}
+		return $new_sizes;
 	}
 
 	private function generate_metadata_under_operation( &$operation, $attachment_id, $filepath, $purpose, $previous_derivatives = [], $original_image = '' ) {
@@ -5434,9 +7452,20 @@ class Image_Watermark_Upload_Handler {
 			return false;
 		}
 		$this->internal_operation_guard = [ 'attachment_id' => $attachment_id, 'token' => $operation['token'] ];
+		// This internal generation never re-scales or re-encodes the main
+		// file. The suppression and the size observation exist only for this call.
+		$this->guarded_generation = [ 'attachment_id' => $attachment_id, 'mime' => (string) wp_check_filetype( $filepath )['type'], 'requested' => null ];
+		add_filter( 'big_image_size_threshold', [ $this, 'filter_guarded_generation_threshold' ], PHP_INT_MAX, 4 );
+		add_filter( 'image_editor_output_format', [ $this, 'filter_guarded_generation_output_format' ], PHP_INT_MAX, 3 );
+		add_filter( 'intermediate_image_sizes_advanced', [ $this, 'observe_guarded_generation_sizes' ], PHP_INT_MAX, 3 );
 		try {
 			$metadata = wp_generate_attachment_metadata( $attachment_id, $filepath );
 		} finally {
+			remove_filter( 'big_image_size_threshold', [ $this, 'filter_guarded_generation_threshold' ], PHP_INT_MAX );
+			remove_filter( 'image_editor_output_format', [ $this, 'filter_guarded_generation_output_format' ], PHP_INT_MAX );
+			remove_filter( 'intermediate_image_sizes_advanced', [ $this, 'observe_guarded_generation_sizes' ], PHP_INT_MAX );
+			$operation['requested_sizes'] = is_array( $this->guarded_generation ) ? $this->guarded_generation['requested'] : null;
+			$this->guarded_generation = null;
 			$this->internal_operation_guard = null;
 		}
 		if ( is_array( $metadata ) && is_string( $original_image ) && $original_image && basename( $original_image ) === $original_image && is_file( dirname( $filepath ) . DIRECTORY_SEPARATOR . $original_image ) ) {
@@ -5466,34 +7495,54 @@ class Image_Watermark_Upload_Handler {
 		if ( $lock === false ) {
 			return $this->operation_failure( $data, 'manual', $attachment_id, 'manual-remove', $this->operation_result( 'failed', '', 'busy', __( 'Another watermark operation is already in progress. Please retry shortly.', 'image-watermark' ), true ) );
 		}
-		$operation = [ 'attachment_id' => $attachment_id, 'token' => $token, 'lock' => $lock ];
+		$operation = [ 'attachment_id' => $attachment_id, 'token' => $token, 'lock' => $lock, 'time_origin' => microtime( true ) ];
 		try {
 			$upload_dir = wp_upload_dir();
 			$relative = $this->operation_destination_relative_path( $filepath, $upload_dir );
 			$groups = [ $relative => [ 'target' => $relative, 'aliases' => [ 'full' ] ] ];
 			if ( $relative === false || ! $this->begin_operation( $operation, 'remove', 'manual-remove', $groups ) ) {
-				return $this->operation_failure( $data, 'manual', $attachment_id, 'manual-remove', $this->operation_result( 'failed', $token, 'journal_invalid', __( 'Watermark recovery state could not be safely recorded.', 'image-watermark' ), true ) );
+				return $this->operation_failure( $data, 'manual', $attachment_id, 'manual-remove', $this->begin_failure_result( $operation, $token ) );
 			}
-			$previous_derivatives = array_merge( $this->recoverable_derivative_paths( $operation, $upload_dir ), $this->snapshot_registered_derivatives( $data, $filepath, $upload_dir ) );
+			$flagged = (int) get_post_meta( $attachment_id, $this->plugin->get_watermarked_meta_key(), true ) === 1;
+			// Remove's only watermark target is the main file.
+			$operation['target_limit'] = 1;
+			$prepared = $this->prepare_name_stable_operation( $operation, $data, $filepath, $upload_dir, $backup_filepath );
+			if ( $prepared !== true ) {
+				return $this->operation_terminal_failure( $operation, $data, 'manual', 'manual-remove', 'failed', $prepared['code'], $prepared['message'], $prepared['code'] !== 'journal_budget_exceeded' );
+			}
+			$pre = $operation['pre_operation'];
+			$previous_derivatives = [];
+			foreach ( $pre['sizes'] as $name => $size ) {
+				$previous_derivatives[ $name ] = $size['path'];
+			}
 			if ( ! $this->stage_copy_and_promote( $operation, $backup_filepath, $filepath, 'remove-source', $options ) ) {
 				return $this->operation_terminal_failure( $operation, $data, 'manual', 'manual-remove', 'failed', 'restore_failed', __( 'Failed to restore from backup.', 'image-watermark' ), true );
 			}
 			if ( ! $this->set_operation_state( $operation, 'metadata-commit' ) ) {
 				return $this->operation_terminal_failure( $operation, $data, 'manual', 'manual-remove', 'partial', 'journal_write_failed', __( 'The clean file was restored, but its metadata could not be safely committed.', 'image-watermark' ), true );
 			}
-			$metadata = $this->generate_metadata_under_operation( $operation, $attachment_id, $filepath, 'remove', $previous_derivatives, isset( $data['original_image'] ) ? $data['original_image'] : '' );
+			$metadata = $this->generate_metadata_under_operation( $operation, $attachment_id, $filepath, 'remove', $previous_derivatives, $pre['original_image'] );
 			if ( ! is_array( $metadata ) ) {
 				return $this->operation_terminal_failure( $operation, $data, 'manual', 'manual-remove', 'partial', 'metadata_commit_failed', __( 'The clean file was restored, but attachment metadata could not be committed.', 'image-watermark' ), true, [], array_merge( [ 'full' ], array_keys( $previous_derivatives ) ) );
 			}
+			if ( $this->name_stable_identity_changed( $attachment_id, $metadata, $pre ) ) {
+				$rollback = $this->rollback_name_stable_identity( $operation, $metadata, $upload_dir, $backup_filepath, $options );
+				return $this->operation_terminal_failure( $operation, $data, 'manual', 'manual-remove', 'partial', $rollback['committed'] ? 'main_identity_changed' : 'metadata_commit_failed', $this->name_stable_partial_message( 'main_identity_changed', 'remove' ), true, [ 'full' ] );
+			}
+			if ( $this->should_inject_operation_fault( 'after_identity_check', [ 'attachment_id' => $attachment_id, 'token' => $token ] ) ) {
+				return $this->operation_terminal_failure( $operation, $data, 'manual', 'manual-remove', 'partial', 'metadata_commit_interrupted', __( 'The clean file was restored, but regenerated metadata commit was interrupted.', 'image-watermark' ), true, [ 'full' ] );
+			}
+			$plan = $this->plan_name_stable_derivatives( $operation, $metadata, $upload_dir, 'remove', $options, $flagged );
+			$metadata = $plan['metadata'];
 			if ( ! $this->set_regenerated_metadata_commit_state( $operation, $metadata, 'pending' ) ) {
 				return $this->operation_terminal_failure( $operation, $data, 'manual', 'manual-remove', 'partial', 'journal_write_failed', __( 'The clean file was restored, but regenerated metadata could not be safely prepared for commit.', 'image-watermark' ), true, [ 'full' ] );
 			}
 			if ( $this->should_inject_operation_fault( 'after_regenerated_metadata_pending', [ 'attachment_id' => $attachment_id, 'token' => $token ] ) ) {
 				return $this->operation_terminal_failure( $operation, $data, 'manual', 'manual-remove', 'partial', 'metadata_commit_interrupted', __( 'The clean file was restored, but regenerated metadata commit was interrupted.', 'image-watermark' ), true, [ 'full' ] );
 			}
-			$derivatives = $this->reconcile_regenerated_derivatives( $operation, $previous_derivatives, $metadata, $filepath, $upload_dir, (int) get_post_meta( $attachment_id, $this->plugin->get_watermarked_meta_key(), true ) === 1 );
-			if ( ! empty( $derivatives['failed'] ) ) {
-				return $this->operation_terminal_failure( $operation, $data, 'manual', 'manual-remove', 'partial', 'derivative_reconciliation_failed', __( 'The clean file was restored, but obsolete derivatives could not be safely reconciled.', 'image-watermark' ), true, [ 'full' ], $derivatives['failed'] );
+			$failed = $this->execute_name_stable_plan( $operation, $plan, $upload_dir, $options );
+			if ( ! empty( $failed ) ) {
+				return $this->operation_terminal_failure( $operation, $data, 'manual', 'manual-remove', 'partial', 'derivative_reconciliation_failed', __( 'The clean file was restored, but obsolete derivatives could not be safely reconciled.', 'image-watermark' ), true, [ 'full' ], $failed );
 			}
 			// derivative reconciliation has just fence-checked and journaled the
 			// intended metadata boundary; commit that fresh metadata without asking
@@ -5508,7 +7557,16 @@ class Image_Watermark_Upload_Handler {
 			if ( ! $this->commit_watermarked_flag( $operation, 0 ) ) {
 				return $this->operation_terminal_failure( $operation, $data, 'manual', 'manual-remove', 'partial', 'metadata_commit_failed', __( 'The clean file was restored, but its watermark state could not be committed.', 'image-watermark' ), true );
 			}
-			return $this->operation_complete( $operation, wp_get_attachment_metadata( $attachment_id ), $attachment_id, 'manual', 'manual-remove', 'watermarkremoved', __( 'Watermark removed.', 'image-watermark' ), array_merge( [ 'full' ], array_keys( $previous_derivatives ) ) );
+			$processed = array_merge( [ 'full' ], $plan['written'] );
+			$deferred_failed = $this->retire_deferred_name_stable_paths( $operation, $plan, $upload_dir );
+			if ( ! empty( $deferred_failed ) ) {
+				return $this->operation_terminal_failure( $operation, $data, 'manual', 'manual-remove', 'partial', 'derivative_reconciliation_failed', __( 'The clean file was restored, but obsolete derivatives could not be safely reconciled.', 'image-watermark' ), true, $processed, $deferred_failed, $this->name_stable_skipped_sizes( $plan ) );
+			}
+			$partial = $this->name_stable_partial_code( $plan );
+			if ( $partial !== '' ) {
+				return $this->operation_terminal_failure( $operation, $data, 'manual', 'manual-remove', 'partial', $partial, $this->name_stable_partial_message( $partial, 'remove' ), true, $processed, $plan['failed'], $this->name_stable_skipped_sizes( $plan ) );
+			}
+			return $this->operation_complete( $operation, wp_get_attachment_metadata( $attachment_id ), $attachment_id, 'manual', 'manual-remove', 'watermarkremoved', __( 'Watermark removed.', 'image-watermark' ), $processed, $this->name_stable_skipped_sizes( $plan ) );
 		} finally {
 			$this->internal_operation_guard = null;
 			$this->release_operation_lock( $operation );
@@ -7458,6 +9516,7 @@ class Image_Watermark_Upload_Handler {
 			if ( ! empty( $record['temporary_recovery_restore'] ) && is_array( $record['temporary_recovery_restore'] ) ) {
 				$targets[] = $record['temporary_recovery_restore'];
 			}
+			$targets = array_merge( $targets, $this->name_stable_remap_artifacts( $record ) );
 			foreach ( $targets as $target ) {
 				if ( ! is_array( $target ) || empty( $target['stage'] ) ) {
 					continue;

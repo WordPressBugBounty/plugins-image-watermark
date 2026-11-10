@@ -5,7 +5,7 @@ Tags: image, images, watermark, watermarking, protection
 Requires at least: 6.3
 Requires PHP: 7.3
 Tested up to: 7.1
-Stable tag: 2.0.16
+Stable tag: 2.0.17
 License: MIT
 License URI: https://opensource.org/licenses/MIT
 
@@ -115,6 +115,15 @@ No. The right-click, drag-and-drop, and developer-tools protections are browser-
 3. screenshot-3.png
 
 == Changelog ==
+
+= 2.0.17 =
+* Fix: Keep other plugins' attachment metadata callbacks running after automatic watermarking
+* Fix: Preserve image and thumbnail filenames when removing or reapplying watermarks
+* Fix: Apply automatic watermarks when another plugin converts or moves an upload, including scaled images in custom uploads storage
+* Fix: Report skipped or failed automatic watermark operations consistently, including uploads whose final file cannot be matched
+* Fix: Avoid false operation-limit failures during remove and reapply on sites with many image sizes or multiple operations per request
+* Fix: Handle thumbnail ownership checks in media libraries containing audio, video, and documents
+* Fix: Clean up remaining plugin data during uninstall when deletion is enabled, while retaining active operation locks
 
 = 2.0.16 =
 * Fix: Distinguish missing backups from invalid or inaccessible backup paths
@@ -363,5 +372,5 @@ Initial release
 
 == Upgrade Notice ==
 
-= 2.0.16 =
-Improves backup-path error reporting and speeds up Media Library watermark controls while preserving full backup validation before restore or reapply.
+= 2.0.17 =
+Fixes compatibility with other plugins' upload metadata callbacks and preserves image filenames during watermark removal and reapplication. Also improves automatic upload handling, operation reporting, and uninstall cleanup.

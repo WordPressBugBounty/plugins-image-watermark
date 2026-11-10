@@ -110,7 +110,7 @@ class Image_Watermark_Actions_Controller {
 	}
 
 	/**
-	 * Preserve legacy error fields while carrying the private P00-09 outcome for
+	 * Preserve legacy error fields while carrying the private operation outcome for
 	 * native consumers. Complete success strings remain unchanged.
 	 *
 	 * @param string $message User-safe message.

@@ -2,22 +2,22 @@
 # This file is distributed under the MIT.
 msgid ""
 msgstr ""
-"Project-Id-Version: Image Watermark 2.0.16\n"
+"Project-Id-Version: Image Watermark 2.0.17\n"
 "Report-Msgid-Bugs-To: https://wordpress.org/support/plugin/image-watermark\n"
 "Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
-"POT-Creation-Date: 2026-10-20T15:05:05+00:00\n"
+"POT-Creation-Date: 2026-11-10T12:31:55+00:00\n"
 "PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
 "X-Generator: WP-CLI 2.12.0\n"
 "X-Domain: image-watermark\n"
 
 #. Plugin Name of the plugin
 #: image-watermark.php
-#: image-watermark.php:989
-#: image-watermark.php:1326
+#: image-watermark.php:994
+#: image-watermark.php:1347
 #: includes/class-settings.php:121
 #: includes/class-settings.php:189
 msgid "Image Watermark"
@@ -43,257 +43,257 @@ msgstr ""
 msgid "https://www.dfactory.co/"
 msgstr ""
 
-#: image-watermark.php:404
-#: image-watermark.php:474
-#: image-watermark.php:516
-#: image-watermark.php:990
-#: image-watermark.php:1413
+#: image-watermark.php:409
+#: image-watermark.php:479
+#: image-watermark.php:521
+#: image-watermark.php:995
+#: image-watermark.php:1434
 msgid "Apply watermark"
 msgstr ""
 
-#: image-watermark.php:405
-#: image-watermark.php:475
-#: image-watermark.php:517
-#: image-watermark.php:982
-#: image-watermark.php:1415
-#: includes/class-diagnostics.php:410
+#: image-watermark.php:410
+#: image-watermark.php:480
+#: image-watermark.php:522
+#: image-watermark.php:987
+#: image-watermark.php:1436
+#: includes/class-diagnostics.php:416
 msgid "Remove watermark"
 msgstr ""
 
-#: image-watermark.php:416
+#: image-watermark.php:421
 msgid "Select watermark image"
 msgstr ""
 
-#: image-watermark.php:417
+#: image-watermark.php:422
 msgid "Original size"
 msgstr ""
 
-#: image-watermark.php:418
+#: image-watermark.php:423
 #: includes/class-settings.php:1255
 msgid "No watermark image has been selected yet."
 msgstr ""
 
-#: image-watermark.php:419
+#: image-watermark.php:424
 msgid "This image cannot be used as a watermark. Use a JPEG, PNG, WebP, or GIF image."
 msgstr ""
 
-#: image-watermark.php:420
+#: image-watermark.php:425
 #: includes/class-settings.php:1317
 #: includes/class-settings.php:1320
 msgid "px"
 msgstr ""
 
-#: image-watermark.php:422
+#: image-watermark.php:427
 msgid "Add watermark image"
 msgstr ""
 
-#: image-watermark.php:432
+#: image-watermark.php:437
 msgid "Are you sure you want to reset all settings to their default values?"
 msgstr ""
 
-#: image-watermark.php:433
+#: image-watermark.php:438
 msgid "Generate Preview"
 msgstr ""
 
-#: image-watermark.php:434
+#: image-watermark.php:439
 msgid "Generating..."
 msgstr ""
 
-#: image-watermark.php:436
+#: image-watermark.php:441
 #: includes/class-settings.php:1262
 msgid "Original watermark image:"
 msgstr ""
 
-#: image-watermark.php:437
-#: includes/class-diagnostics.php:750
+#: image-watermark.php:442
+#: includes/class-diagnostics.php:771
 msgid "No watermark image selected."
 msgstr ""
 
-#: image-watermark.php:438
+#: image-watermark.php:443
 msgid "Loading…"
 msgstr ""
 
-#: image-watermark.php:439
+#: image-watermark.php:444
 #: includes/class-settings.php:1262
 msgid "Original text size:"
 msgstr ""
 
-#: image-watermark.php:440
+#: image-watermark.php:445
 msgid "Enter text to preview."
 msgstr ""
 
-#: image-watermark.php:441
+#: image-watermark.php:446
 msgid "Copied!"
 msgstr ""
 
-#: image-watermark.php:442
+#: image-watermark.php:447
 msgid "Copy failed — please select and copy manually."
 msgstr ""
 
-#: image-watermark.php:476
+#: image-watermark.php:481
 #: includes/class-settings.php:53
 #: includes/class-settings.php:221
 msgid "Watermark"
 msgstr ""
 
-#: image-watermark.php:477
+#: image-watermark.php:482
 msgid "Working…"
 msgstr ""
 
-#: image-watermark.php:478
-#: image-watermark.php:518
-#: includes/class-upload-handler.php:3292
-#: includes/class-upload-handler.php:4720
-#: includes/class-upload-handler.php:4721
+#: image-watermark.php:483
+#: image-watermark.php:523
+#: includes/class-upload-handler.php:3962
+#: includes/class-upload-handler.php:5426
+#: includes/class-upload-handler.php:5427
 msgid "Watermark applied."
 msgstr ""
 
-#: image-watermark.php:479
-#: image-watermark.php:519
-#: includes/class-upload-handler.php:5511
+#: image-watermark.php:484
+#: image-watermark.php:524
+#: includes/class-upload-handler.php:7569
 msgid "Watermark removed."
 msgstr ""
 
-#: image-watermark.php:480
-#: image-watermark.php:520
+#: image-watermark.php:485
+#: image-watermark.php:525
 msgid "Action failed."
 msgstr ""
 
-#: image-watermark.php:481
+#: image-watermark.php:486
 msgid "Action skipped."
 msgstr ""
 
-#: image-watermark.php:482
-#: image-watermark.php:1096
+#: image-watermark.php:487
+#: image-watermark.php:1117
 msgid "The watermark could not be applied to the selected files because no valid images (JPEG, PNG, WebP) were selected."
 msgstr ""
 
-#: image-watermark.php:483
+#: image-watermark.php:488
 msgid "Watermark was successfully applied to 1 image."
 msgstr ""
 
 #. translators: Number of images successfully watermarked.
-#: image-watermark.php:485
+#: image-watermark.php:490
 #, php-format
 msgid "Watermark was successfully applied to %s images."
 msgstr ""
 
-#: image-watermark.php:486
-#: image-watermark.php:1110
+#: image-watermark.php:491
+#: image-watermark.php:1131
 msgid "The watermark could not be removed from the selected files because no valid images (JPEG, PNG, WebP) were selected."
 msgstr ""
 
-#: image-watermark.php:487
+#: image-watermark.php:492
 msgid "Watermark was successfully removed from 1 image."
 msgstr ""
 
 #. translators: Number of images successfully restored from backups.
-#: image-watermark.php:489
+#: image-watermark.php:494
 #, php-format
 msgid "Watermark was successfully removed from %s images."
 msgstr ""
 
-#: image-watermark.php:490
-#: image-watermark.php:1094
+#: image-watermark.php:495
+#: image-watermark.php:1115
 msgid "Skipped images"
 msgstr ""
 
-#: image-watermark.php:491
+#: image-watermark.php:496
 msgid "A bulk action is currently running. Please wait…"
 msgstr ""
 
-#: image-watermark.php:492
+#: image-watermark.php:497
 msgid "Unknown - possibly completed; verify whether the image is watermarked before retrying. The request was not resent."
 msgstr ""
 
-#: image-watermark.php:493
+#: image-watermark.php:498
 msgid "Unknown - not submitted after a request error; verify whether the image is watermarked before retrying."
 msgstr ""
 
-#: image-watermark.php:494
+#: image-watermark.php:499
 msgid "Dismiss this notice."
 msgstr ""
 
-#: image-watermark.php:521
+#: image-watermark.php:526
 msgid "Working..."
 msgstr ""
 
-#: image-watermark.php:551
+#: image-watermark.php:556
 msgid "This content is protected"
 msgstr ""
 
 #. translators: 1: Human-readable elapsed time since activation.
-#: image-watermark.php:653
+#: image-watermark.php:658
 #, php-format
 msgid "Hey, you've been using <strong>Image Watermark</strong> for more than %s."
 msgstr ""
 
-#: image-watermark.php:657
+#: image-watermark.php:662
 msgid "Could you please do me a BIG favor and give it a 5-star rating on WordPress to help us spread the word and boost our motivation."
 msgstr ""
 
-#: image-watermark.php:657
+#: image-watermark.php:662
 msgid "Your help is much appreciated. Thank you!"
 msgstr ""
 
-#: image-watermark.php:661
+#: image-watermark.php:666
 msgid "Ok, you deserve it"
 msgstr ""
 
-#: image-watermark.php:663
+#: image-watermark.php:668
 msgid "Nope, maybe later"
 msgstr ""
 
-#: image-watermark.php:665
+#: image-watermark.php:670
 msgid "I already did"
 msgstr ""
 
-#: image-watermark.php:776
+#: image-watermark.php:781
 msgid "Invalid security token."
 msgstr ""
 
-#: image-watermark.php:780
+#: image-watermark.php:785
 msgid "You do not have permission to perform this action."
 msgstr ""
 
-#: image-watermark.php:798
+#: image-watermark.php:803
 msgid "No image library available to generate a preview."
 msgstr ""
 
-#: image-watermark.php:802
+#: image-watermark.php:807
 msgid "Imagick is selected but not available on the server."
 msgstr ""
 
-#: image-watermark.php:806
+#: image-watermark.php:811
 msgid "GD with JPEG support is required to generate a preview."
 msgstr ""
 
-#: image-watermark.php:815
+#: image-watermark.php:820
 msgid "Failed to create sample image."
 msgstr ""
 
-#: image-watermark.php:817
-#: image-watermark.php:821
-#: image-watermark.php:825
+#: image-watermark.php:822
+#: image-watermark.php:826
+#: image-watermark.php:830
 msgid "Failed to render text preview."
 msgstr ""
 
-#: image-watermark.php:1009
+#: image-watermark.php:1038
 msgid "remove"
 msgstr ""
 
-#: image-watermark.php:1009
+#: image-watermark.php:1038
 msgid "apply"
 msgstr ""
 
 #. translators: 1: Attachment ID. 2: Operation state. 3: Operation. 4: Processed count. 5: Failed count. 6: Skipped count. 7: Size names.
-#: image-watermark.php:1023
+#: image-watermark.php:1052
 #, php-format
 msgid "ID %1$d: %2$s %3$s. Processed: %4$d; failed: %5$d; skipped: %6$d%7$s"
 msgstr ""
 
 #. translators: Number of images successfully watermarked.
-#: image-watermark.php:1099
+#: image-watermark.php:1120
 #, php-format
 msgid "%s image was successfully watermarked."
 msgid_plural "%s images were successfully watermarked."
@@ -301,7 +301,7 @@ msgstr[0] ""
 msgstr[1] ""
 
 #. translators: Number of images partially watermarked.
-#: image-watermark.php:1105
+#: image-watermark.php:1126
 #, php-format
 msgid "Watermark was partially applied to %s image."
 msgid_plural "Watermark was partially applied to %s images."
@@ -309,7 +309,7 @@ msgstr[0] ""
 msgstr[1] ""
 
 #. translators: Number of images successfully restored from backups.
-#: image-watermark.php:1113
+#: image-watermark.php:1134
 #, php-format
 msgid "%s image was successfully restored."
 msgid_plural "%s images were successfully restored."
@@ -317,7 +317,7 @@ msgstr[0] ""
 msgstr[1] ""
 
 #. translators: Number of images partially restored from backups.
-#: image-watermark.php:1119
+#: image-watermark.php:1140
 #, php-format
 msgid "Watermark was partially removed from %s image."
 msgid_plural "Watermark was partially removed from %s images."
@@ -325,26 +325,26 @@ msgstr[0] ""
 msgstr[1] ""
 
 #. translators: Number of selected images not submitted in the bounded request.
-#: image-watermark.php:1125
+#: image-watermark.php:1146
 #, php-format
 msgid "%s selected image was not submitted. Reselect the remaining images and run the action again."
 msgid_plural "%s selected images were not submitted. Reselect the remaining images and run the action again."
 msgstr[0] ""
 msgstr[1] ""
 
-#: image-watermark.php:1326
+#: image-watermark.php:1347
 msgid "Image backup"
 msgstr ""
 
-#: image-watermark.php:1326
+#: image-watermark.php:1347
 msgid "Your uploads folder is not writable, so we can't create backups of your images. This feature has been disabled for now."
 msgstr ""
 
-#: image-watermark.php:1342
+#: image-watermark.php:1363
 msgid "Settings"
 msgstr ""
 
-#: image-watermark.php:1359
+#: image-watermark.php:1380
 msgid "Support"
 msgstr ""
 
@@ -406,7 +406,7 @@ msgstr ""
 
 #. translators: 1: Unsupported MIME type.
 #: includes/class-actions-controller.php:332
-#: includes/class-upload-handler.php:2206
+#: includes/class-upload-handler.php:2811
 #, php-format
 msgid "Unsupported file type (%s). Only JPEG, PNG, and WebP are supported."
 msgstr ""
@@ -470,533 +470,533 @@ msgstr ""
 msgid "Only JPEG, PNG, and WebP files can be watermarked."
 msgstr ""
 
-#: includes/class-diagnostics.php:127
+#: includes/class-diagnostics.php:133
 msgid "Watermark source"
 msgstr ""
 
-#: includes/class-diagnostics.php:128
+#: includes/class-diagnostics.php:134
 msgid "This attachment is the selected watermark image."
 msgstr ""
 
-#: includes/class-diagnostics.php:129
+#: includes/class-diagnostics.php:135
 msgid "The watermark source cannot be watermarked. Choose a different image or change the watermark source."
 msgstr ""
 
-#: includes/class-diagnostics.php:141
+#: includes/class-diagnostics.php:147
 msgid "Attachment metadata"
 msgstr ""
 
-#: includes/class-diagnostics.php:142
+#: includes/class-diagnostics.php:148
 msgid "Present."
 msgstr ""
 
-#: includes/class-diagnostics.php:142
+#: includes/class-diagnostics.php:148
 msgid "Missing or incomplete."
 msgstr ""
 
-#: includes/class-diagnostics.php:143
+#: includes/class-diagnostics.php:149
 msgid "Try regenerating thumbnails to rebuild attachment metadata."
 msgstr ""
 
-#: includes/class-diagnostics.php:161
+#: includes/class-diagnostics.php:167
 msgid "Source file"
 msgstr ""
 
-#: includes/class-diagnostics.php:162
+#: includes/class-diagnostics.php:168
 msgid "Found on disk."
 msgstr ""
 
-#: includes/class-diagnostics.php:162
+#: includes/class-diagnostics.php:168
 msgid "Not found on disk."
 msgstr ""
 
-#: includes/class-diagnostics.php:163
+#: includes/class-diagnostics.php:169
 msgid "The file may have been moved, deleted, or offloaded to remote storage. Watermarking requires the file to be present locally."
 msgstr ""
 
-#: includes/class-diagnostics.php:183
-#: includes/class-diagnostics.php:193
+#: includes/class-diagnostics.php:189
+#: includes/class-diagnostics.php:199
 msgid "Image size"
 msgstr ""
 
 #. translators: 1: Image width in pixels. 2: Image height in pixels.
-#: includes/class-diagnostics.php:185
-#: includes/class-diagnostics.php:195
+#: includes/class-diagnostics.php:191
+#: includes/class-diagnostics.php:201
 #, php-format
 msgid "%1$d x %2$d px"
 msgstr ""
 
 #. translators: 1: Minimum image width in pixels. 2: Minimum image height in pixels.
-#: includes/class-diagnostics.php:187
+#: includes/class-diagnostics.php:193
 #, php-format
 msgid "Image is smaller than the minimum threshold (%1$d x %2$d px). Update the Skip Small Images setting or choose a larger image."
 msgstr ""
 
-#: includes/class-diagnostics.php:203
+#: includes/class-diagnostics.php:209
 msgid "Image file"
 msgstr ""
 
-#: includes/class-diagnostics.php:204
+#: includes/class-diagnostics.php:210
 msgid "Cannot read image dimensions. File may be corrupt."
 msgstr ""
 
-#: includes/class-diagnostics.php:205
+#: includes/class-diagnostics.php:211
 msgid "Try re-uploading the image."
 msgstr ""
 
-#: includes/class-diagnostics.php:219
+#: includes/class-diagnostics.php:225
 msgid "Current operation eligibility"
 msgstr ""
 
-#: includes/class-diagnostics.php:220
+#: includes/class-diagnostics.php:226
 msgid "Current settings can be applied."
 msgstr ""
 
-#: includes/class-diagnostics.php:254
-#: includes/class-diagnostics.php:266
-#: includes/class-diagnostics.php:274
-#: includes/class-diagnostics.php:283
+#: includes/class-diagnostics.php:260
+#: includes/class-diagnostics.php:272
+#: includes/class-diagnostics.php:280
+#: includes/class-diagnostics.php:289
 msgid "Target sizes"
 msgstr ""
 
-#: includes/class-diagnostics.php:255
-#: includes/class-diagnostics.php:795
+#: includes/class-diagnostics.php:261
+#: includes/class-diagnostics.php:816
 msgid "No image sizes selected for watermarking."
 msgstr ""
 
-#: includes/class-diagnostics.php:256
-#: includes/class-diagnostics.php:796
+#: includes/class-diagnostics.php:262
+#: includes/class-diagnostics.php:817
 msgid "Go to Watermark settings and select at least one image size."
 msgstr ""
 
 #. translators: Comma-separated unavailable image-size names.
-#: includes/class-diagnostics.php:262
+#: includes/class-diagnostics.php:268
 #, php-format
 msgid "(missing: %s)"
 msgstr ""
 
-#: includes/class-diagnostics.php:268
+#: includes/class-diagnostics.php:274
 msgid "Some selected sizes are unavailable for this attachment. Regenerate thumbnails if they should exist."
 msgstr ""
 
 #. translators: Comma-separated selected image-size names.
-#: includes/class-diagnostics.php:285
+#: includes/class-diagnostics.php:291
 #, php-format
 msgid "Selected sizes (%s) are not available for this attachment."
 msgstr ""
 
-#: includes/class-diagnostics.php:286
+#: includes/class-diagnostics.php:292
 msgid "Regenerate thumbnails or select different image sizes in Watermark settings."
 msgstr ""
 
-#: includes/class-diagnostics.php:295
+#: includes/class-diagnostics.php:301
 msgid "Watermark status"
 msgstr ""
 
-#: includes/class-diagnostics.php:296
+#: includes/class-diagnostics.php:302
 msgid "Watermarked."
 msgstr ""
 
-#: includes/class-diagnostics.php:296
+#: includes/class-diagnostics.php:302
 msgid "Not watermarked."
 msgstr ""
 
-#: includes/class-diagnostics.php:306
+#: includes/class-diagnostics.php:312
 msgid "Review the last watermark operation, correct the reported issue, then apply the watermark manually or re-upload the image. Regenerate thumbnails first if sizes are missing."
 msgstr ""
 
-#: includes/class-diagnostics.php:309
+#: includes/class-diagnostics.php:315
 msgid "Finalization was deferred because another watermark operation was running. The new image sizes are not registered yet."
 msgstr ""
 
-#: includes/class-diagnostics.php:310
+#: includes/class-diagnostics.php:316
 msgid "Complete the deferred upload once the other operation finishes, or apply the watermark manually."
 msgstr ""
 
-#: includes/class-diagnostics.php:313
+#: includes/class-diagnostics.php:319
 msgid "WordPress rejected the request that finalizes this upload, so automatic watermarking did not run."
 msgstr ""
 
-#: includes/class-diagnostics.php:316
+#: includes/class-diagnostics.php:322
 msgid "Automatic watermarking did not complete during finalization."
 msgstr ""
 
-#: includes/class-diagnostics.php:319
+#: includes/class-diagnostics.php:325
 msgid "The browser did not finish processing this upload, so automatic watermarking did not run."
 msgstr ""
 
-#: includes/class-diagnostics.php:322
+#: includes/class-diagnostics.php:328
 msgid "Automatic watermarking will run when the editor finishes processing this upload."
 msgstr ""
 
-#: includes/class-diagnostics.php:326
+#: includes/class-diagnostics.php:332
 msgid "Complete the deferred upload once the other operation finishes. Manual watermarking is unavailable until its replacement main file is finalized."
 msgstr ""
 
-#: includes/class-diagnostics.php:327
+#: includes/class-diagnostics.php:333
 msgid "Re-upload the image. Manual watermarking is unavailable because its replacement main file was never finalized."
 msgstr ""
 
-#: includes/class-diagnostics.php:332
+#: includes/class-diagnostics.php:338
 msgid "Client-side upload"
 msgstr ""
 
-#: includes/class-diagnostics.php:349
+#: includes/class-diagnostics.php:355
 msgid "Unregistered sideloaded files"
 msgstr ""
 
 #. translators: %d: Number of unregistered sideloaded files.
-#: includes/class-diagnostics.php:351
+#: includes/class-diagnostics.php:357
 #, php-format
 msgid "%d file produced during a client-side upload is not registered with this image and is not watermarked."
 msgid_plural "%d files produced during a client-side upload are not registered with this image and are not watermarked."
 msgstr[0] ""
 msgstr[1] ""
 
-#: includes/class-diagnostics.php:352
+#: includes/class-diagnostics.php:358
 msgid "Clean up the removable files. Files marked for manual review could not be proven to belong to this image and must be checked on the server."
 msgstr ""
 
-#: includes/class-diagnostics.php:352
+#: includes/class-diagnostics.php:358
 msgid "These files may still be registered when the upload finishes."
 msgstr ""
 
-#: includes/class-diagnostics.php:368
+#: includes/class-diagnostics.php:374
 msgid "File inventory"
 msgstr ""
 
-#: includes/class-diagnostics.php:369
+#: includes/class-diagnostics.php:375
 msgid "The full attachment file and selected generated sizes are watermark targets. A WordPress -scaled attachment file is the full target when selected. A separately retained original_image file is not a current watermark target. File URLs may be derivable, but this diagnostic does not test HTTP access. Backup locations are not disclosed."
 msgstr ""
 
-#: includes/class-diagnostics.php:370
+#: includes/class-diagnostics.php:376
 msgid "Verify public-file and backup access with unauthenticated requests on the deployed server. Server access rules, not browser copy deterrents, control file access."
 msgstr ""
 
-#: includes/class-diagnostics.php:379
-#: includes/class-diagnostics.php:387
-#: includes/class-diagnostics.php:399
+#: includes/class-diagnostics.php:385
+#: includes/class-diagnostics.php:393
+#: includes/class-diagnostics.php:405
 msgid "Backup"
 msgstr ""
 
-#: includes/class-diagnostics.php:381
+#: includes/class-diagnostics.php:387
 msgid "Check access to the configured backup location and verify the attachment file record."
 msgstr ""
 
-#: includes/class-diagnostics.php:388
+#: includes/class-diagnostics.php:394
 msgid "Backup exists."
 msgstr ""
 
-#: includes/class-diagnostics.php:388
+#: includes/class-diagnostics.php:394
 msgid "No backup found."
 msgstr ""
 
-#: includes/class-diagnostics.php:391
+#: includes/class-diagnostics.php:397
 msgid "Image is watermarked but no valid clean backup was found. Remove watermark is not possible."
 msgstr ""
 
-#: includes/class-diagnostics.php:392
+#: includes/class-diagnostics.php:398
 msgid "No backup yet. A backup will be created when watermark is applied."
 msgstr ""
 
-#: includes/class-diagnostics.php:400
+#: includes/class-diagnostics.php:406
 msgid "Backup is disabled."
 msgstr ""
 
-#: includes/class-diagnostics.php:401
+#: includes/class-diagnostics.php:407
 msgid "Enable \"Backup Images\" in the Status tab to allow watermark removal."
 msgstr ""
 
-#: includes/class-diagnostics.php:412
+#: includes/class-diagnostics.php:418
 msgid "Possible."
 msgstr ""
 
-#: includes/class-diagnostics.php:413
+#: includes/class-diagnostics.php:419
 msgid "Not possible - no backup."
 msgstr ""
 
-#: includes/class-diagnostics.php:413
+#: includes/class-diagnostics.php:419
 msgid "Not applicable - image is not watermarked."
 msgstr ""
 
-#: includes/class-diagnostics.php:414
+#: includes/class-diagnostics.php:420
 msgid "A verified clean backup is required before the watermark can be removed."
 msgstr ""
 
 #. translators: 1: Processed size count. 2: Failed size count. 3: Skipped size count.
-#: includes/class-diagnostics.php:440
+#: includes/class-diagnostics.php:464
 #, php-format
 msgid " Processed: %1$d; failed: %2$d; skipped: %3$d."
 msgstr ""
 
-#: includes/class-diagnostics.php:452
+#: includes/class-diagnostics.php:476
 msgid "Last operation"
 msgstr ""
 
-#: includes/class-diagnostics.php:521
+#: includes/class-diagnostics.php:542
 msgid "The image is watermarked and no valid clean backup is available for safe reapplication."
 msgstr ""
 
-#: includes/class-diagnostics.php:526
+#: includes/class-diagnostics.php:547
 msgid "The image is already watermarked. Applying again will replace the current watermark."
 msgstr ""
 
-#: includes/class-diagnostics.php:592
+#: includes/class-diagnostics.php:613
 msgid "Processing Engine"
 msgstr ""
 
-#: includes/class-diagnostics.php:593
+#: includes/class-diagnostics.php:614
 msgid "Watermark Configuration"
 msgstr ""
 
-#: includes/class-diagnostics.php:594
+#: includes/class-diagnostics.php:615
 #: includes/class-settings.php:266
 msgid "Image Sizes"
 msgstr ""
 
-#: includes/class-diagnostics.php:595
+#: includes/class-diagnostics.php:616
 msgid "Backup and Restore"
 msgstr ""
 
-#: includes/class-diagnostics.php:596
+#: includes/class-diagnostics.php:617
 msgid "Operating Modes"
 msgstr ""
 
-#: includes/class-diagnostics.php:597
+#: includes/class-diagnostics.php:618
 msgid "Support Notes"
 msgstr ""
 
-#: includes/class-diagnostics.php:622
-#: includes/class-diagnostics.php:630
+#: includes/class-diagnostics.php:643
+#: includes/class-diagnostics.php:651
 msgid "Available."
 msgstr ""
 
-#: includes/class-diagnostics.php:622
-#: includes/class-diagnostics.php:630
+#: includes/class-diagnostics.php:643
+#: includes/class-diagnostics.php:651
 #: includes/class-settings.php:1268
 msgid "Not available."
 msgstr ""
 
-#: includes/class-diagnostics.php:623
+#: includes/class-diagnostics.php:644
 msgid "Install or enable the PHP Imagick extension for best quality."
 msgstr ""
 
-#: includes/class-diagnostics.php:631
+#: includes/class-diagnostics.php:652
 msgid "Install or enable the PHP GD extension on your server."
 msgstr ""
 
-#: includes/class-diagnostics.php:641
-#: includes/class-diagnostics.php:649
+#: includes/class-diagnostics.php:662
+#: includes/class-diagnostics.php:670
 msgid "Active engine"
 msgstr ""
 
-#: includes/class-diagnostics.php:650
+#: includes/class-diagnostics.php:671
 msgid "No image processing engine available."
 msgstr ""
 
-#: includes/class-diagnostics.php:651
+#: includes/class-diagnostics.php:672
 msgid "Install GD or Imagick on your server to enable watermarking."
 msgstr ""
 
-#: includes/class-diagnostics.php:660
+#: includes/class-diagnostics.php:681
 msgid "PHP"
 msgstr ""
 
 #. translators: 1: Installed PHP version.
-#: includes/class-diagnostics.php:662
+#: includes/class-diagnostics.php:683
 #, php-format
 msgid "PHP %s"
 msgstr ""
 
-#: includes/class-diagnostics.php:663
+#: includes/class-diagnostics.php:684
 msgid "PHP 7.3+ is recommended. Please upgrade your PHP version."
 msgstr ""
 
-#: includes/class-diagnostics.php:680
+#: includes/class-diagnostics.php:701
 msgid "Watermark type"
 msgstr ""
 
-#: includes/class-diagnostics.php:681
+#: includes/class-diagnostics.php:702
 #: includes/class-settings.php:394
 msgid "Image"
 msgstr ""
 
-#: includes/class-diagnostics.php:681
+#: includes/class-diagnostics.php:702
 #: includes/class-settings.php:395
 msgid "Text"
 msgstr ""
 
-#: includes/class-diagnostics.php:707
-#: includes/class-diagnostics.php:718
+#: includes/class-diagnostics.php:728
+#: includes/class-diagnostics.php:739
 msgid "Watermark rotation"
 msgstr ""
 
-#: includes/class-diagnostics.php:709
+#: includes/class-diagnostics.php:730
 msgid "0 degrees (no rotation)."
 msgstr ""
 
 #. translators: %d: Clockwise rotation degrees.
-#: includes/class-diagnostics.php:710
+#: includes/class-diagnostics.php:731
 #, php-format
 msgid "%d degrees clockwise."
 msgstr ""
 
-#: includes/class-diagnostics.php:720
+#: includes/class-diagnostics.php:741
 msgid "Set rotation to 0 degrees or enable the required image-library rotation support."
 msgstr ""
 
-#: includes/class-diagnostics.php:739
-#: includes/class-diagnostics.php:747
+#: includes/class-diagnostics.php:760
+#: includes/class-diagnostics.php:768
 msgid "Watermark image"
 msgstr ""
 
-#: includes/class-diagnostics.php:740
+#: includes/class-diagnostics.php:761
 msgid "Selected and available."
 msgstr ""
 
-#: includes/class-diagnostics.php:740
+#: includes/class-diagnostics.php:761
 msgid "Attachment exists but file is missing from disk."
 msgstr ""
 
-#: includes/class-diagnostics.php:741
+#: includes/class-diagnostics.php:762
 msgid "Re-upload the watermark image or select a different one in Watermark settings."
 msgstr ""
 
-#: includes/class-diagnostics.php:749
+#: includes/class-diagnostics.php:770
 msgid "Selected attachment is not a valid image."
 msgstr ""
 
-#: includes/class-diagnostics.php:751
+#: includes/class-diagnostics.php:772
 msgid "Go to Watermark settings and select a valid watermark image."
 msgstr ""
 
-#: includes/class-diagnostics.php:764
+#: includes/class-diagnostics.php:785
 msgid "Watermark text"
 msgstr ""
 
-#: includes/class-diagnostics.php:765
+#: includes/class-diagnostics.php:786
 msgid "No watermark text entered."
 msgstr ""
 
-#: includes/class-diagnostics.php:766
+#: includes/class-diagnostics.php:787
 msgid "Enter watermark text in the Watermark settings."
 msgstr ""
 
-#: includes/class-diagnostics.php:772
+#: includes/class-diagnostics.php:793
 msgid "Watermark font"
 msgstr ""
 
 #. translators: Font file name.
-#: includes/class-diagnostics.php:773
+#: includes/class-diagnostics.php:794
 #, php-format
 msgid "Font \"%s\" not found."
 msgstr ""
 
 #. translators: Font file name.
-#: includes/class-diagnostics.php:774
+#: includes/class-diagnostics.php:795
 msgid "Select a different font in Watermark settings."
 msgstr ""
 
-#: includes/class-diagnostics.php:794
-#: includes/class-diagnostics.php:802
+#: includes/class-diagnostics.php:815
+#: includes/class-diagnostics.php:823
 msgid "Image sizes"
 msgstr ""
 
-#: includes/class-diagnostics.php:825
+#: includes/class-diagnostics.php:846
 msgid "Backup images"
 msgstr ""
 
-#: includes/class-diagnostics.php:826
-#: includes/class-diagnostics.php:862
-#: includes/class-diagnostics.php:957
-#: includes/class-diagnostics.php:965
-#: includes/class-diagnostics.php:973
+#: includes/class-diagnostics.php:847
+#: includes/class-diagnostics.php:883
+#: includes/class-diagnostics.php:978
+#: includes/class-diagnostics.php:986
+#: includes/class-diagnostics.php:994
 msgid "Enabled."
 msgstr ""
 
-#: includes/class-diagnostics.php:826
-#: includes/class-diagnostics.php:862
-#: includes/class-diagnostics.php:957
-#: includes/class-diagnostics.php:965
-#: includes/class-diagnostics.php:973
+#: includes/class-diagnostics.php:847
+#: includes/class-diagnostics.php:883
+#: includes/class-diagnostics.php:978
+#: includes/class-diagnostics.php:986
+#: includes/class-diagnostics.php:994
 msgid "Disabled."
 msgstr ""
 
-#: includes/class-diagnostics.php:827
+#: includes/class-diagnostics.php:848
 msgid "Enable backups if you want to remove future watermarks and restore originals."
 msgstr ""
 
-#: includes/class-diagnostics.php:835
-#: includes/class-diagnostics.php:843
-#: includes/class-diagnostics.php:851
+#: includes/class-diagnostics.php:856
+#: includes/class-diagnostics.php:864
+#: includes/class-diagnostics.php:872
 msgid "Backup folder"
 msgstr ""
 
-#: includes/class-diagnostics.php:836
+#: includes/class-diagnostics.php:857
 msgid "Exists and writable."
 msgstr ""
 
-#: includes/class-diagnostics.php:844
+#: includes/class-diagnostics.php:865
 msgid "Exists but not writable."
 msgstr ""
 
-#: includes/class-diagnostics.php:845
+#: includes/class-diagnostics.php:866
 msgid "Set write permissions on the uploads/iw-backup directory."
 msgstr ""
 
-#: includes/class-diagnostics.php:852
+#: includes/class-diagnostics.php:873
 msgid "Not yet created (will be created on first watermark apply)."
 msgstr ""
 
-#: includes/class-diagnostics.php:861
+#: includes/class-diagnostics.php:882
 msgid "Preserve timestamps"
 msgstr ""
 
-#: includes/class-diagnostics.php:870
+#: includes/class-diagnostics.php:891
 msgid "Backup web access"
 msgstr ""
 
-#: includes/class-diagnostics.php:871
+#: includes/class-diagnostics.php:892
 msgid "Web access has not been tested. This does not affect watermark processing."
 msgstr ""
 
-#: includes/class-diagnostics.php:872
+#: includes/class-diagnostics.php:893
 msgid "Configure server-level protection for the backup directory and verify it with an unauthenticated request."
 msgstr ""
 
-#: includes/class-diagnostics.php:956
+#: includes/class-diagnostics.php:977
 msgid "Automatic watermarking"
 msgstr ""
 
-#: includes/class-diagnostics.php:958
+#: includes/class-diagnostics.php:979
 msgid "Enable \"Automatic Watermarking\" in Watermark settings to watermark new uploads automatically."
 msgstr ""
 
-#: includes/class-diagnostics.php:964
+#: includes/class-diagnostics.php:985
 msgid "Manual watermarking"
 msgstr ""
 
-#: includes/class-diagnostics.php:966
+#: includes/class-diagnostics.php:987
 msgid "Enable \"Manual Watermarking\" in Watermark settings to allow applying and removing watermarks from existing images."
 msgstr ""
 
-#: includes/class-diagnostics.php:972
+#: includes/class-diagnostics.php:993
 msgid "Front-end watermarking"
 msgstr ""
 
-#: includes/class-diagnostics.php:990
+#: includes/class-diagnostics.php:1011
 msgid "Plugin version"
 msgstr ""
 
-#: includes/class-diagnostics.php:997
+#: includes/class-diagnostics.php:1018
 msgid "CDN / caching note"
 msgstr ""
 
-#: includes/class-diagnostics.php:998
+#: includes/class-diagnostics.php:1019
 msgid "If you use a CDN or aggressive caching, watermarked images may not appear updated immediately."
 msgstr ""
 
-#: includes/class-diagnostics.php:999
+#: includes/class-diagnostics.php:1020
 msgid "Purge your CDN or object cache after applying watermarks if thumbnails do not update."
 msgstr ""
 
@@ -1448,7 +1448,7 @@ msgid "Invalid text preview options."
 msgstr ""
 
 #: includes/class-settings.php:1057
-#: includes/class-upload-handler.php:2236
+#: includes/class-upload-handler.php:2841
 msgid "Custom watermark dimensions must both be positive whole numbers."
 msgstr ""
 
@@ -1522,540 +1522,607 @@ msgstr ""
 msgid "Remove image"
 msgstr ""
 
-#: includes/class-upload-handler.php:302
+#: includes/class-upload-handler.php:391
 msgid "Watermark rotation requires the GD imagerotate() function on this server."
 msgstr ""
 
-#: includes/class-upload-handler.php:322
+#: includes/class-upload-handler.php:411
 msgid "Watermark rotation requires additional Imagick layer support on this server."
 msgstr ""
 
-#: includes/class-upload-handler.php:331
+#: includes/class-upload-handler.php:420
 msgid "Watermark rotation requires an available image processing engine."
 msgstr ""
 
-#: includes/class-upload-handler.php:709
+#. translators: 1: Comma-separated uploaded file names.
+#: includes/class-upload-handler.php:447
+#, php-format
+msgid "Automatic watermarking was skipped for %1$s: Image Watermark could not confirm which attachment the upload became. Check the image and apply the watermark manually if needed."
+msgstr ""
+
+#: includes/class-upload-handler.php:953
+msgid "Automatic watermarking was skipped because another plugin changed the upload to a file type Image Watermark does not support."
+msgstr ""
+
+#: includes/class-upload-handler.php:959
+msgid "Automatic watermarking was skipped because Image Watermark could not resolve the uploaded file inside the uploads folder."
+msgstr ""
+
+#: includes/class-upload-handler.php:1323
 msgid "This image is already watermarked, so a new unwatermarked file cannot be added to it. Re-upload the image instead."
 msgstr ""
 
-#: includes/class-upload-handler.php:712
+#: includes/class-upload-handler.php:1326
 msgid "Another watermark operation is running on this image. Please retry shortly."
 msgstr ""
 
-#: includes/class-upload-handler.php:882
+#: includes/class-upload-handler.php:1504
 msgid "Automatic watermarking was skipped because the finalized upload did not match the file recorded when the upload started. Apply the watermark manually."
 msgstr ""
 
-#: includes/class-upload-handler.php:896
+#: includes/class-upload-handler.php:1518
 msgid "Automatic watermarking was skipped because the upload was finalized more than 24 hours after it started. Apply the watermark manually."
 msgstr ""
 
-#: includes/class-upload-handler.php:1026
+#: includes/class-upload-handler.php:1648
 msgid "There is no deferred upload finalization to complete for this image."
 msgstr ""
 
-#: includes/class-upload-handler.php:1033
+#: includes/class-upload-handler.php:1655
 msgid "This upload was already settled, so its deferred finalization is not replayed."
 msgstr ""
 
-#: includes/class-upload-handler.php:1036
-#: includes/class-upload-handler.php:1091
+#: includes/class-upload-handler.php:1658
+#: includes/class-upload-handler.php:1713
 msgid "Another watermark operation is still running on this image. Please retry shortly."
 msgstr ""
 
-#: includes/class-upload-handler.php:1048
+#: includes/class-upload-handler.php:1670
 msgid "The deferred upload finalization completed."
 msgstr ""
 
-#: includes/class-upload-handler.php:1082
+#: includes/class-upload-handler.php:1704
 msgid "No unregistered sideloaded files were found."
 msgstr ""
 
-#: includes/class-upload-handler.php:1085
-#: includes/class-upload-handler.php:1100
+#: includes/class-upload-handler.php:1707
+#: includes/class-upload-handler.php:1722
 msgid "This upload may still be finalizing. Try again after it completes, or after one hour."
 msgstr ""
 
-#: includes/class-upload-handler.php:1126
+#: includes/class-upload-handler.php:1748
 msgid "Unregistered sideloaded files were removed. Files that could not be proven to belong to this image were left for manual review."
 msgstr ""
 
-#: includes/class-upload-handler.php:1650
+#: includes/class-upload-handler.php:2254
 msgid "This upload was not finalized: the editor replaced its main file, but the image metadata was never updated. Complete the deferred upload if one is available, or re-upload the image."
 msgstr ""
 
-#: includes/class-upload-handler.php:1655
+#: includes/class-upload-handler.php:2259
 msgid "New image sizes from this upload were not registered because the image was already watermarked before the upload finished. Apply the watermark again to regenerate every size, or re-upload the image."
 msgstr ""
 
-#: includes/class-upload-handler.php:1660
+#: includes/class-upload-handler.php:2264
 msgid "Another watermark operation was running, so this upload was not finalized. Its image sizes were kept and the upload can be completed once that operation finishes."
 msgstr ""
 
-#: includes/class-upload-handler.php:2086
+#: includes/class-upload-handler.php:2690
 msgid "(unknown)"
 msgstr ""
 
 #. translators: 1: Missing font file name.
-#: includes/class-upload-handler.php:2088
+#: includes/class-upload-handler.php:2692
 #, php-format
 msgid "Image Watermark: Text watermark skipped because the font file \"%s\" is missing."
 msgstr ""
 
-#: includes/class-upload-handler.php:2184
+#: includes/class-upload-handler.php:2789
 msgid "No image processing engine available (GD or Imagick required)."
 msgstr ""
 
-#: includes/class-upload-handler.php:2217
+#: includes/class-upload-handler.php:2822
 msgid "Cannot watermark the selected watermark image itself."
 msgstr ""
 
-#: includes/class-upload-handler.php:2226
+#: includes/class-upload-handler.php:2831
 msgid "Manual watermarking is disabled in settings."
 msgstr ""
 
-#: includes/class-upload-handler.php:2246
+#: includes/class-upload-handler.php:2851
 msgid "Please select a valid watermark image."
 msgstr ""
 
-#: includes/class-upload-handler.php:2254
+#: includes/class-upload-handler.php:2859
 msgid "Please enter watermark text."
 msgstr ""
 
 #. translators: 1: Selected font file name.
-#: includes/class-upload-handler.php:2267
+#: includes/class-upload-handler.php:2872
 #, php-format
 msgid "Selected font \"%s\" is not available. Please choose a different font."
 msgstr ""
 
-#: includes/class-upload-handler.php:2281
-#: includes/class-upload-handler.php:2944
-#: includes/class-upload-handler.php:3316
-#: includes/class-upload-handler.php:6448
+#: includes/class-upload-handler.php:2886
+#: includes/class-upload-handler.php:3579
+#: includes/class-upload-handler.php:3986
+#: includes/class-upload-handler.php:6548
+#: includes/class-upload-handler.php:8506
 msgid "Invalid attachment metadata."
 msgstr ""
 
-#: includes/class-upload-handler.php:2296
-#: includes/class-upload-handler.php:3353
+#: includes/class-upload-handler.php:2901
+#: includes/class-upload-handler.php:4023
 msgid "No watermark backup found for this image."
 msgstr ""
 
-#: includes/class-upload-handler.php:2896
-#: includes/class-upload-handler.php:3083
-#: includes/class-upload-handler.php:5467
+#: includes/class-upload-handler.php:3517
+#: includes/class-upload-handler.php:3724
+#: includes/class-upload-handler.php:7496
 msgid "Another watermark operation is already in progress. Please retry shortly."
 msgstr ""
 
 #. translators: 1: Watermark skip message.
-#: includes/class-upload-handler.php:2967
-#: includes/class-upload-handler.php:4925
+#: includes/class-upload-handler.php:3602
+#: includes/class-upload-handler.php:5631
 #, php-format
 msgid "Image Watermark: Upload successful, but watermark skipped - %s"
 msgstr ""
 
-#: includes/class-upload-handler.php:2973
+#: includes/class-upload-handler.php:3608
 msgid "Eligibility check failed."
 msgstr ""
 
-#: includes/class-upload-handler.php:2998
+#: includes/class-upload-handler.php:3633
 msgid "Automatic watermarking was skipped because the image was not attached to a post during upload."
 msgstr ""
 
 #. translators: 1: Parent post type.
-#: includes/class-upload-handler.php:3005
+#: includes/class-upload-handler.php:3640
 #, php-format
 msgid "Automatic watermarking was skipped because the parent post type \"%s\" is not selected."
 msgstr ""
 
-#: includes/class-upload-handler.php:3010
+#: includes/class-upload-handler.php:3645
 msgid "Watermarking skipped by filter."
 msgstr ""
 
-#: includes/class-upload-handler.php:3023
+#: includes/class-upload-handler.php:3658
 msgid "The original image file could not be found. It may have been moved, deleted, or offloaded to remote storage."
 msgstr ""
 
-#: includes/class-upload-handler.php:3033
+#: includes/class-upload-handler.php:3668
 msgid "Image is smaller than the minimum dimensions required for watermarking."
 msgstr ""
 
-#: includes/class-upload-handler.php:3040
+#: includes/class-upload-handler.php:3675
 msgid "No selected image sizes are available for this attachment."
 msgstr ""
 
 #. translators: 1: Image metadata read error.
-#: includes/class-upload-handler.php:3053
+#: includes/class-upload-handler.php:3688
 #, php-format
 msgid "Watermark skipped because image metadata could not be read: %s"
 msgstr ""
 
-#: includes/class-upload-handler.php:3066
+#: includes/class-upload-handler.php:3703
 msgid "The image file could not be read. It may be corrupt or in an unsupported format."
 msgstr ""
 
-#: includes/class-upload-handler.php:3090
+#: includes/class-upload-handler.php:3718
 msgid "Selected image paths could not be safely prepared."
 msgstr ""
 
-#: includes/class-upload-handler.php:3097
+#: includes/class-upload-handler.php:3734
 msgid "The interrupted watermark operation cannot prove that every live target is clean. No image was overwritten."
 msgstr ""
 
-#: includes/class-upload-handler.php:3100
-#: includes/class-upload-handler.php:5475
-msgid "Watermark recovery state could not be safely recorded."
-msgstr ""
-
-#: includes/class-upload-handler.php:3105
-#: includes/class-upload-handler.php:3110
-#: includes/class-upload-handler.php:3116
+#: includes/class-upload-handler.php:3742
+#: includes/class-upload-handler.php:3747
+#: includes/class-upload-handler.php:3753
 msgid "The interrupted watermark recovery was interrupted again and can be retried safely."
 msgstr ""
 
-#: includes/class-upload-handler.php:3112
+#: includes/class-upload-handler.php:3749
 msgid "The interrupted watermark operation needs a verified clean recovery source before it can be retried."
 msgstr ""
 
-#: includes/class-upload-handler.php:3127
+#: includes/class-upload-handler.php:3764
 msgid "Automatic watermarking was skipped because the image is already watermarked."
 msgstr ""
 
-#: includes/class-upload-handler.php:3133
+#: includes/class-upload-handler.php:3770
 msgid "Watermark not applied: the watermark source image file is missing from the server. Please re-select a watermark image in settings."
 msgstr ""
 
-#: includes/class-upload-handler.php:3141
+#: includes/class-upload-handler.php:3778
 msgid "Watermark not applied because the original backup is missing."
 msgstr ""
 
-#: includes/class-upload-handler.php:3144
+#: includes/class-upload-handler.php:3792
 msgid "The clean backup could not be safely restored for reapplication."
 msgstr ""
 
-#: includes/class-upload-handler.php:3148
+#: includes/class-upload-handler.php:3796
+#: includes/class-upload-handler.php:3803
 msgid "Image metadata could not be regenerated after restoring the clean source."
 msgstr ""
 
-#: includes/class-upload-handler.php:3153
+#: includes/class-upload-handler.php:3809
 msgid "No regenerated image sizes are available for watermarking."
 msgstr ""
 
-#: includes/class-upload-handler.php:3162
-#: includes/class-upload-handler.php:4895
-#: includes/class-upload-handler.php:4901
-#: includes/class-upload-handler.php:6504
+#: includes/class-upload-handler.php:3818
+#: includes/class-upload-handler.php:5601
+#: includes/class-upload-handler.php:5607
+#: includes/class-upload-handler.php:8562
 msgid "Failed to copy original file to backup location."
 msgstr ""
 
-#: includes/class-upload-handler.php:3166
+#: includes/class-upload-handler.php:3822
 msgid "A verified temporary clean recovery source could not be created. Watermark not applied."
 msgstr ""
 
-#: includes/class-upload-handler.php:3169
+#: includes/class-upload-handler.php:3825
+#: includes/class-upload-handler.php:6544
+#: includes/class-upload-handler.php:6591
 msgid "Watermark recovery state could not be updated."
 msgstr ""
 
-#: includes/class-upload-handler.php:3177
+#: includes/class-upload-handler.php:3833
 msgid "Watermark could not be applied to every selected image size."
 msgstr ""
 
 #. translators: 1: Image metadata write error.
-#: includes/class-upload-handler.php:3218
+#: includes/class-upload-handler.php:3877
 #, php-format
 msgid "Watermark applied, but image metadata could not be preserved: %s"
 msgstr ""
 
 #. translators: 1: Image metadata write error.
-#: includes/class-upload-handler.php:3218
+#: includes/class-upload-handler.php:3877
 msgid "The staged image could not be verified."
 msgstr ""
 
-#: includes/class-upload-handler.php:3245
+#: includes/class-upload-handler.php:3904
 msgid "All watermark outputs were staged, but promotion could not be safely started."
 msgstr ""
 
-#: includes/class-upload-handler.php:3268
+#: includes/class-upload-handler.php:3927
 msgid "Watermarked files were prepared, but their metadata could not be safely committed."
 msgstr ""
 
-#: includes/class-upload-handler.php:3271
+#: includes/class-upload-handler.php:3930
 msgid "Watermarked files were prepared, but regenerated metadata could not be safely prepared for commit."
 msgstr ""
 
-#: includes/class-upload-handler.php:3274
+#: includes/class-upload-handler.php:3933
 msgid "Watermarked files were prepared, but regenerated metadata commit was interrupted."
 msgstr ""
 
-#: includes/class-upload-handler.php:3279
+#: includes/class-upload-handler.php:3938
+#: includes/class-upload-handler.php:3954
 msgid "Watermarked files were prepared, but obsolete derivatives could not be safely reconciled."
 msgstr ""
 
-#: includes/class-upload-handler.php:3284
+#: includes/class-upload-handler.php:3943
 msgid "Watermarked files were prepared, but attachment metadata could not be committed."
 msgstr ""
 
-#: includes/class-upload-handler.php:3287
+#: includes/class-upload-handler.php:3946
 msgid "Watermarked files were prepared, but regenerated metadata commit could not be recorded."
 msgstr ""
 
-#: includes/class-upload-handler.php:3290
+#: includes/class-upload-handler.php:3949
 msgid "Watermarked files were prepared, but their watermark state could not be committed."
 msgstr ""
 
-#: includes/class-upload-handler.php:3456
+#: includes/class-upload-handler.php:4126
 msgid "The image metadata is invalid."
 msgstr ""
 
-#: includes/class-upload-handler.php:3469
-#: includes/class-upload-handler.php:3616
+#: includes/class-upload-handler.php:4139
+#: includes/class-upload-handler.php:4286
 msgid "The JPEG header is invalid."
 msgstr ""
 
-#: includes/class-upload-handler.php:3486
-#: includes/class-upload-handler.php:3624
+#: includes/class-upload-handler.php:4156
+#: includes/class-upload-handler.php:4294
 msgid "The JPEG marker is invalid."
 msgstr ""
 
-#: includes/class-upload-handler.php:3492
-#: includes/class-upload-handler.php:3630
+#: includes/class-upload-handler.php:4162
+#: includes/class-upload-handler.php:4300
 msgid "The JPEG marker could not be read."
 msgstr ""
 
-#: includes/class-upload-handler.php:3518
+#: includes/class-upload-handler.php:4188
 msgid "The JPEG segment length is truncated."
 msgstr ""
 
-#: includes/class-upload-handler.php:3524
+#: includes/class-upload-handler.php:4194
 msgid "The JPEG segment length is invalid."
 msgstr ""
 
-#: includes/class-upload-handler.php:3557
-#: includes/class-upload-handler.php:3661
+#: includes/class-upload-handler.php:4227
+#: includes/class-upload-handler.php:4331
 msgid "The JPEG ended before a scan or end marker."
 msgstr ""
 
-#: includes/class-upload-handler.php:3642
-#: includes/class-upload-handler.php:3648
+#: includes/class-upload-handler.php:4312
+#: includes/class-upload-handler.php:4318
 msgid "The JPEG metadata segment is invalid."
 msgstr ""
 
-#: includes/class-upload-handler.php:3753
-#: includes/class-upload-handler.php:3759
-#: includes/class-upload-handler.php:3763
-#: includes/class-upload-handler.php:3774
+#: includes/class-upload-handler.php:4423
+#: includes/class-upload-handler.php:4429
+#: includes/class-upload-handler.php:4433
+#: includes/class-upload-handler.php:4444
 msgid "The JPEG file could not be opened."
 msgstr ""
 
-#: includes/class-upload-handler.php:3767
-#: includes/class-upload-handler.php:3788
-#: includes/class-upload-handler.php:3792
+#: includes/class-upload-handler.php:4437
+#: includes/class-upload-handler.php:4458
+#: includes/class-upload-handler.php:4462
 msgid "The JPEG file could not be read completely."
 msgstr ""
 
-#: includes/class-upload-handler.php:3822
+#: includes/class-upload-handler.php:4492
 msgid "A temporary JPEG metadata file could not be created."
 msgstr ""
 
-#: includes/class-upload-handler.php:3829
+#: includes/class-upload-handler.php:4499
 msgid "The temporary JPEG metadata file could not be opened."
 msgstr ""
 
-#: includes/class-upload-handler.php:3855
+#: includes/class-upload-handler.php:4525
 msgid "The JPEG metadata output could not be verified."
 msgstr ""
 
-#: includes/class-upload-handler.php:3861
-#: includes/class-upload-handler.php:3871
+#: includes/class-upload-handler.php:4531
+#: includes/class-upload-handler.php:4541
 msgid "The JPEG metadata output could not be given the image file permissions."
 msgstr ""
 
-#: includes/class-upload-handler.php:3875
+#: includes/class-upload-handler.php:4545
 msgid "The verified JPEG metadata output could not replace the image."
 msgstr ""
 
-#: includes/class-upload-handler.php:3881
+#: includes/class-upload-handler.php:4551
 msgid "The JPEG metadata output could not be written."
 msgstr ""
 
-#: includes/class-upload-handler.php:4077
+#: includes/class-upload-handler.php:4682
+msgid "Earlier interrupted watermark work on this image is unresolved and its recovery record cannot be extended safely. Review the image before retrying. No image was changed."
+msgstr ""
+
+#: includes/class-upload-handler.php:4684
+msgid "Watermark recovery state could not be safely recorded."
+msgstr ""
+
+#: includes/class-upload-handler.php:4775
 msgid "The attachment backup path is invalid."
 msgstr ""
 
-#: includes/class-upload-handler.php:4080
+#: includes/class-upload-handler.php:4778
 msgid "The attachment backup path could not be verified. Check access to the configured backup location."
 msgstr ""
 
-#: includes/class-upload-handler.php:4860
+#: includes/class-upload-handler.php:5566
 msgid "The attachment source path is invalid."
 msgstr ""
 
-#: includes/class-upload-handler.php:4861
+#: includes/class-upload-handler.php:5567
 msgid "The attachment source path could not be verified. Check the local image file and attachment metadata."
 msgstr ""
 
 #. translators: 1: Backup root path.
-#: includes/class-upload-handler.php:4865
+#: includes/class-upload-handler.php:5571
 #, php-format
 msgid "Backup folder could not be created: %s"
 msgstr ""
 
-#: includes/class-upload-handler.php:4874
-#: includes/class-upload-handler.php:4906
-#: includes/class-upload-handler.php:6472
-#: includes/class-upload-handler.php:6512
+#: includes/class-upload-handler.php:5580
+#: includes/class-upload-handler.php:5612
+#: includes/class-upload-handler.php:8530
+#: includes/class-upload-handler.php:8570
 msgid "The clean backup was retained, but its watermark association could not be committed."
 msgstr ""
 
-#: includes/class-upload-handler.php:4881
-#: includes/class-upload-handler.php:6484
+#: includes/class-upload-handler.php:5587
+#: includes/class-upload-handler.php:8542
 msgid "Could not read original image file."
 msgstr ""
 
 #. translators: 1: Backup subfolder path.
-#: includes/class-upload-handler.php:4886
+#: includes/class-upload-handler.php:5592
 #, php-format
 msgid "Backup subfolder could not be created: %s"
 msgstr ""
 
 #. translators: 1: Backup failure message.
-#: includes/class-upload-handler.php:4922
+#: includes/class-upload-handler.php:5628
 #, php-format
 msgid "Image Watermark: Backup failed - %s. Watermark not applied. Please check backup folder permissions."
 msgstr ""
 
-#: includes/class-upload-handler.php:4963
+#. translators: 1: Operation failure message.
+#: includes/class-upload-handler.php:5650
+#, php-format
+msgid "Live image files were already changed when the operation failed: %s Retry the operation to finish it."
+msgstr ""
+
+#: includes/class-upload-handler.php:5678
 msgid "Watermarked files were prepared, but completion could not be safely recorded."
 msgstr ""
 
-#: includes/class-upload-handler.php:5479
+#: includes/class-upload-handler.php:6572
+msgid "The backup does not have the image's current dimensions or format, for example because another tool resized or converted the image after the backup was made. No image was changed."
+msgstr ""
+
+#: includes/class-upload-handler.php:6579
+#: includes/class-upload-handler.php:6588
+msgid "This image has too many sizes for its recovery record to be kept safely. No image was changed."
+msgstr ""
+
+#: includes/class-upload-handler.php:6601
+msgid "Not enough request time remained to change this image safely. No image was changed; retry the operation."
+msgstr ""
+
+#: includes/class-upload-handler.php:7385
+msgid "Regeneration would have renamed or converted the main image file, so its previous file name and metadata were restored. Some selected image sizes may no longer be watermarked; apply the watermark again after resolving the conversion."
+msgstr ""
+
+#: includes/class-upload-handler.php:7386
+msgid "Regeneration would have renamed or converted the main image file, so its previous file name and metadata were restored. Previous image sizes were kept; retry the removal after resolving the conversion."
+msgstr ""
+
+#: includes/class-upload-handler.php:7388
+msgid "Some image sizes could not be regenerated, so their previous files were kept. Retry the operation."
+msgstr ""
+
+#: includes/class-upload-handler.php:7390
+msgid "Some regenerated image sizes were missing locally before they could take their previous file names, so the previous files were kept."
+msgstr ""
+
+#: includes/class-upload-handler.php:7392
+msgid "The interrupted operation no longer matched this image, so the previous size file names could not be restored."
+msgstr ""
+
+#: includes/class-upload-handler.php:7395
+msgid "Some previous image size files could not be proven to belong only to this image, so they were left in place."
+msgstr ""
+
+#: includes/class-upload-handler.php:7519
 msgid "Failed to restore from backup."
 msgstr ""
 
-#: includes/class-upload-handler.php:5482
+#: includes/class-upload-handler.php:7522
 msgid "The clean file was restored, but its metadata could not be safely committed."
 msgstr ""
 
-#: includes/class-upload-handler.php:5486
-#: includes/class-upload-handler.php:5503
+#: includes/class-upload-handler.php:7526
+#: includes/class-upload-handler.php:7552
 msgid "The clean file was restored, but attachment metadata could not be committed."
 msgstr ""
 
-#: includes/class-upload-handler.php:5489
-msgid "The clean file was restored, but regenerated metadata could not be safely prepared for commit."
-msgstr ""
-
-#: includes/class-upload-handler.php:5492
+#: includes/class-upload-handler.php:7533
+#: includes/class-upload-handler.php:7541
 msgid "The clean file was restored, but regenerated metadata commit was interrupted."
 msgstr ""
 
-#: includes/class-upload-handler.php:5496
+#: includes/class-upload-handler.php:7538
+msgid "The clean file was restored, but regenerated metadata could not be safely prepared for commit."
+msgstr ""
+
+#: includes/class-upload-handler.php:7545
+#: includes/class-upload-handler.php:7563
 msgid "The clean file was restored, but obsolete derivatives could not be safely reconciled."
 msgstr ""
 
-#: includes/class-upload-handler.php:5506
+#: includes/class-upload-handler.php:7555
 msgid "The clean file was restored, but regenerated metadata commit could not be recorded."
 msgstr ""
 
-#: includes/class-upload-handler.php:5509
+#: includes/class-upload-handler.php:7558
 msgid "The clean file was restored, but its watermark state could not be committed."
 msgstr ""
 
-#: includes/class-upload-handler.php:5760
-#: includes/class-upload-handler.php:5784
-#: includes/class-upload-handler.php:6938
+#: includes/class-upload-handler.php:7818
+#: includes/class-upload-handler.php:7842
+#: includes/class-upload-handler.php:8996
 msgid "The watermark image could not be prepared for rotation."
 msgstr ""
 
-#: includes/class-upload-handler.php:5768
-#: includes/class-upload-handler.php:6925
+#: includes/class-upload-handler.php:7826
+#: includes/class-upload-handler.php:8983
 msgid "The rotated watermark dimensions are invalid."
 msgstr ""
 
-#: includes/class-upload-handler.php:5775
-#: includes/class-upload-handler.php:6932
+#: includes/class-upload-handler.php:7833
+#: includes/class-upload-handler.php:8990
 msgid "The predicted rotated watermark allocation is unsafe."
 msgstr ""
 
-#: includes/class-upload-handler.php:5789
-#: includes/class-upload-handler.php:5826
-#: includes/class-upload-handler.php:6944
+#: includes/class-upload-handler.php:7847
+#: includes/class-upload-handler.php:7884
+#: includes/class-upload-handler.php:9002
 msgid "The watermark image could not be rotated."
 msgstr ""
 
-#: includes/class-upload-handler.php:5796
+#: includes/class-upload-handler.php:7854
 msgid "The rotated watermark image has invalid dimensions."
 msgstr ""
 
-#: includes/class-upload-handler.php:5804
-#: includes/class-upload-handler.php:5812
-#: includes/class-upload-handler.php:6955
-#: includes/class-upload-handler.php:6964
+#: includes/class-upload-handler.php:7862
+#: includes/class-upload-handler.php:7870
+#: includes/class-upload-handler.php:9013
+#: includes/class-upload-handler.php:9022
 msgid "The scaled rotated watermark cannot fit the target image."
 msgstr ""
 
-#: includes/class-upload-handler.php:5816
-#: includes/class-upload-handler.php:5943
+#: includes/class-upload-handler.php:7874
+#: includes/class-upload-handler.php:8001
 msgid "The rotated watermark opacity could not be applied."
 msgstr ""
 
-#: includes/class-upload-handler.php:5821
-#: includes/class-upload-handler.php:6971
+#: includes/class-upload-handler.php:7879
+#: includes/class-upload-handler.php:9029
 msgid "The rotated watermark image could not be composed."
 msgstr ""
 
-#: includes/class-upload-handler.php:5908
-#: includes/class-upload-handler.php:5918
-#: includes/class-upload-handler.php:6141
+#: includes/class-upload-handler.php:7966
+#: includes/class-upload-handler.php:7976
+#: includes/class-upload-handler.php:8199
 msgid "The watermark text could not be prepared for rotation."
 msgstr ""
 
-#: includes/class-upload-handler.php:5932
-#: includes/class-upload-handler.php:5953
-#: includes/class-upload-handler.php:6147
+#: includes/class-upload-handler.php:7990
+#: includes/class-upload-handler.php:8011
+#: includes/class-upload-handler.php:8205
 msgid "The watermark text could not be rotated."
 msgstr ""
 
-#: includes/class-upload-handler.php:5939
-#: includes/class-upload-handler.php:6154
+#: includes/class-upload-handler.php:7997
+#: includes/class-upload-handler.php:8212
 msgid "The scaled rotated watermark text cannot fit the target image."
 msgstr ""
 
-#: includes/class-upload-handler.php:5948
-#: includes/class-upload-handler.php:6161
+#: includes/class-upload-handler.php:8006
+#: includes/class-upload-handler.php:8219
 msgid "The rotated watermark text could not be composed."
 msgstr ""
 
-#: includes/class-upload-handler.php:6080
+#: includes/class-upload-handler.php:8138
 msgid "Watermark rotation is not available in GD on this server."
 msgstr ""
 
-#: includes/class-upload-handler.php:6095
-#: includes/class-upload-handler.php:6111
+#: includes/class-upload-handler.php:8153
+#: includes/class-upload-handler.php:8169
 msgid "The watermark text could not be measured for rotation."
 msgstr ""
 
-#: includes/class-upload-handler.php:6130
+#: includes/class-upload-handler.php:8188
 msgid "The predicted rotated text allocation is unsafe."
 msgstr ""
 
-#: includes/class-upload-handler.php:6135
+#: includes/class-upload-handler.php:8193
 msgid "The watermark text layer could not be allocated."
 msgstr ""
 
-#: includes/class-upload-handler.php:6456
+#: includes/class-upload-handler.php:8514
 msgid "Invalid attachment backup path."
 msgstr ""
 
-#: includes/class-upload-handler.php:6464
+#: includes/class-upload-handler.php:8522
 msgid "Original file not found."
 msgstr ""
 
 #. translators: 1: Backup folder path.
-#: includes/class-upload-handler.php:6495
+#: includes/class-upload-handler.php:8553
 #, php-format
 msgid "Backup folder is not writable: %s"
 msgstr ""
 
-#: includes/class-upload-handler.php:6615
+#: includes/class-upload-handler.php:8673
 msgid "Image Watermark: File timestamps could not be preserved on this server. Copies were created, but dates may differ."
 msgstr ""
