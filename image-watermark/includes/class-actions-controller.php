@@ -37,6 +37,30 @@ class Image_Watermark_Actions_Controller {
 		$this->upload_handler = $upload_handler;
 	}
 
+	/** Authorize and dispatch the private single-attachment regeneration action. */
+	public function regenerate_attachment_ajax() {
+		$authorization = $this->authorize_attachment_request(
+			isset( $_POST['attachment_id'] ) && is_string( $_POST['attachment_id'] ) ? wp_unslash( $_POST['attachment_id'] ) : ( isset( $_POST['attachment_id'] ) ? $_POST['attachment_id'] : null ),
+			isset( $_POST['_iw_regenerate_nonce'] ) && is_string( $_POST['_iw_regenerate_nonce'] ) ? wp_unslash( $_POST['_iw_regenerate_nonce'] ) : '',
+			'iw_regenerate_attachment'
+		);
+		if ( ! $authorization['authorized'] ) {
+			wp_send_json_error( $authorization['error'] );
+		}
+		$request = [];
+		foreach ( [ 'mode', 'sizes', 'strict_aliases', 'dry_run', 'cleanup_stale' ] as $key ) {
+			if ( isset( $_POST[ $key ] ) || ( $key === 'cleanup_stale' && array_key_exists( $key, $_POST ) ) ) {
+				$request[ $key ] = wp_unslash( $_POST[ $key ] );
+			}
+		}
+		$result = $this->upload_handler->regenerate_attachment( $authorization['attachment_id'], $request );
+		if ( isset( $result['error'] ) ) {
+			wp_send_json_error( $this->operation_error_response( $result['error'], $result['outcome']['code'], $result ) );
+		}
+		// File paths and private metadata stay server-side.
+		wp_send_json_success( array_intersect_key( $result, array_flip( [ 'outcome', 'preview' ] ) ) );
+	}
+
 	/**
 	 * Build a structured error array for AJAX error responses.
 	 *
@@ -465,7 +489,7 @@ class Image_Watermark_Actions_Controller {
 
 		check_admin_referer( 'bulk-media' );
 
-		$location = esc_url( remove_query_arg( [ 'watermarked', 'watermarkremoved', 'skipped', 'iw_partial_apply', 'iw_partial_remove', 'iw_bulk_result', 'iw_bulk_remaining', 'iw_outcomes', 'messages', 'iw_error', 'trashed', 'untrashed', 'deleted', 'message', 'ids', 'posted' ], wp_get_referer() ) );
+		$location = esc_url( remove_query_arg( [ 'watermarked', 'watermarkremoved', 'regenerated', 'skipped', 'iw_partial_apply', 'iw_partial_remove', 'iw_bulk_result', 'iw_bulk_remaining', 'iw_outcomes', 'messages', 'iw_error', 'trashed', 'untrashed', 'deleted', 'message', 'ids', 'posted' ], wp_get_referer() ) );
 
 		if ( ! $location ) {
 			$location = 'upload.php';

@@ -5,7 +5,7 @@ Tags: image, images, watermark, watermarking, protection
 Requires at least: 6.3
 Requires PHP: 7.3
 Tested up to: 7.1
-Stable tag: 2.0.17
+Stable tag: 2.1.0
 License: MIT
 License URI: https://opensource.org/licenses/MIT
 
@@ -13,96 +13,122 @@ Apply image or text watermarks to new uploads and existing Media Library images.
 
 == Description ==
 
-Enhance your WordPress site's image security and branding. Image Watermark allows you to apply image or text overlays to new uploads and bulk process existing Media Library images with ease.
+Enhance your WordPress site's image security and branding. Use the Watermark screen under Settings to configure image or text watermarks, check Status and its Library section, or process existing images in Bulk Processing.
 
-= Key Features:  =
+= Key Features =
 
 * **Watermark Types**: Choose from image-based or text-based watermarks with full customization.
-* **Flexible Application**: Automatic watermarking on uploads, manual/bulk apply/remove via Media Library.
-* **Advanced Customization**: Position watermarks precisely, adjust sizes, opacity, and more.
+* **Automatic & Manual Watermarking**: Watermark new uploads automatically or apply and remove watermarks through the Media Library.
+* **Bulk Processing**: Apply, remove or scan existing images with selection filters, an Estimate, progress, pause/resume controls and retries for eligible problems. Large Media Library selections can be handed to Bulk Processing.
+* **Advanced Customization**: Adjust watermark position, size, rotation, opacity and image quality, with a live preview.
 * **Small Image Rules**: Skip watermarking for images below configurable minimum width and height thresholds.
 * **Backup & Restore**: Optional backups support watermark removal when a validated clean backup is available.
 * **Image Protection**: Browser-side right-click, drag-and-drop, and developer-tools deterrents.
-* **Status & Diagnostics**: Review PHP, image engine, and backup-folder readiness from the built-in Status tab.
-* **Technical Excellence**: Supports JPEG, PNG, WebP; ImageMagick/GD engines; preserves metadata.
+* **Status & Diagnostics**: Review readiness and the Library's last run and scan under Settings > Watermark > Status.
+* **Image Compatibility**: JPEG, PNG and WebP support through ImageMagick or GD, with EXIF/IPTC preservation where supported.
 
 Perfect for photographers, bloggers, and businesses looking to safeguard their visual content.
 
 For more information, check out the [plugin page](https://www.dfactory.co/products/image-watermark/), [documentation](https://www.dfactory.co/docs/image-watermark/), or [support forum](https://www.dfactory.co/support/forum/image-watermark/).
 
-= Feature Breakdown: =
+= Feature Breakdown =
 
-**Watermarking Types:**
+**Watermarking:**
+
 * Support for image-based watermarks (upload custom images as watermarks)
 * Support for text-based watermarks (customizable fonts, colors, and sizes)
 * Automatic watermarking on new uploads to the Media Library
 * Manual and bulk watermarking for existing images (apply or remove via Media Library actions)
 
+**Bulk Processing:**
+
+* Apply or remove watermarks, or scan your library without changing images
+* Select all images, enter attachment IDs, or filter by upload month and watermark state
+* Estimate the scope before starting, then follow progress with Pause, Resume and Stop controls
+* Review recent runs, saved problems and scan findings, and retry eligible problems
+
 **Customization & Settings:**
+
 * Flexible watermark positioning (9 alignment options with pixel or percentage-based offsets)
 * Three watermark size modes: original, custom dimensions, or scaled to image size
+* Clockwise watermark rotation from 0 to 360 degrees
 * Adjustable watermark transparency and opacity
 * Watermark preview support for image and text watermark modes
 * Optional skip rules for small images based on minimum width and height thresholds
 * Selective application: Choose specific post types or enable everywhere (including frontend uploads)
-* Image format selection (baseline or progressive JPEG)
+* Baseline or progressive JPEG output
 * Configurable image quality settings
 
 **Backup & Management:**
-* Automatic image backup functionality (stores originals for easy restoration)
-* Option to remove watermarks (restores from backups when available)
+
+* Optional clean backups before watermarking
+* Watermark removal restores images from validated clean backups
 * Optional preservation of file timestamps during backup and restore
 * Backup storage follows the configured uploads location; server-level access controls must be verified by the site administrator
 
 **Image Protection:**
-* Disable right-click context menus on images
-* Prevent image copying via drag-and-drop
-* Block access to developer tools for image inspection
+
+* Browser-side deterrents for right-click, image dragging and developer-tools access
 * Customizable protection notice/toast message displayed to users attempting to copy images
 
 **Technical Information:**
+
 * Support for JPEG, PNG, and WebP image formats
 * Dual image processing engines: ImageMagick (preferred) with GD library fallback
 * EXIF and IPTC metadata preservation (where supported)
 * Cache-busting for immediate thumbnail updates after watermark changes
-* Built-in Status tab for PHP, engine, and backup-folder diagnostics
+* Settings > Watermark > Status for PHP, engine, backup-folder readiness and the Library's last run and scan
 * Translation-ready with included .pot file
 
 == Installation ==
 
-1. **Install the Plugin**:
-   - Via WordPress.org: Go to Plugins > Add New, search for "Image Watermark," and click Install Now.
-   - Manual Upload: Download the plugin ZIP from WordPress.org, then upload it via Plugins > Add New > Upload Plugin.
+1. Install Image Watermark through Plugins > Add New, or upload its ZIP through Plugins > Add New > Upload Plugin, then activate it.
+2. Open Settings > Watermark, choose an image or text watermark, and select the image sizes to watermark.
+3. Adjust the position, size, rotation and opacity. Use the preview to check the appearance.
+4. Enable Automatic Watermarking for new uploads, Manual Watermarking for existing images, or both. Keep backups enabled if you want to remove watermarks later, then save your settings.
+5. Test a new upload or a small selection in Bulk Processing. Review the result before processing your library.
 
-2. **Activate the Plugin**:
-   - After installation, activate Image Watermark through the 'Plugins' menu in WordPress.
-
-3. **Configure Settings**:
-   - Navigate to Settings > Watermark in your WordPress admin dashboard.
-   - Choose your watermark type (image or text) and upload/select a watermark image if using image-based.
-   - Adjust positioning, size, opacity, and other options as needed.
-   - Select post types for automatic watermarking or enable for all uploads.
-
-4. **Enable and Test**:
-   - Toggle the plugin on to start automatic watermarking for new uploads.
-   - For existing images, go to Media Library > Bulk Select, choose images, and use the "Apply Watermark" bulk action.
-   - Preview watermarks in the settings page and test on a sample image to ensure everything works.
-
-**Requirements**: WordPress 6.3+, PHP 7.3+, and either GD or ImageMagick library. If issues arise, check server compatibility in Settings > Watermark > Status tab.
+**Requirements**: WordPress 6.3+, PHP 7.3+, and either GD or ImageMagick library. Check readiness under Settings > Watermark > Status; its Library section summarizes the last run and scan.
 
 == Frequently Asked Questions ==
 
+= How do I watermark new uploads? =
+
+In Settings > Watermark, choose an image or text watermark, select the image sizes to watermark, and enable Automatic Watermarking. Save your settings and upload a test image. For frontend uploads, also enable Front-end Watermarking.
+
+= How do I watermark existing images safely? =
+
+Enable Manual Watermarking in Settings > Watermark. For one image, use the Media Library's Apply watermark action. For larger selections, open Bulk Processing, choose Apply watermark and the images, then select Estimate before Start processing.
+
+Keep an independent backup and test a small selection first. Confirm the selection when processing all images, and keep the tab open. If you close it, return to Bulk Processing and use Resume.
+
 = Can I remove a watermark later? =
 
-Yes. Watermark removal restores the original file from a validated clean plugin backup. Keep backup creation enabled before applying watermarks if you want removal to remain available later. Existing valid backups remain usable even if new backup creation is later disabled.
+Yes, if a validated clean plugin backup is available. Enable backups before applying watermarks; existing valid backups remain usable if you later disable new backups. Removal restores from that backup. Applying a watermark again to an already-watermarked image also starts from its clean backup.
 
-= Which image formats and libraries are supported? =
+= Which image formats are supported? =
 
-Image Watermark supports JPEG, PNG, and WebP uploads. The server needs either ImageMagick or GD available, and the Status tab shows which engine is active.
+JPEG, PNG and WebP. Your server needs ImageMagick or GD; Settings > Watermark > Status shows engine availability.
+
+= Why was an image skipped or refused? =
+
+Check the reason in Bulk Processing and review Settings > Watermark > Status for configuration issues. An image may be excluded by your filters, fall below the minimum dimensions, or be the selected watermark image itself. A skip or refusal does not mean it was watermarked.
+
+= How do I read results? =
+
+Bulk Processing shows progress and per-image outcomes while this tab processes images. In Recent runs, open Details where available to review saved problems or scan findings. History and problem lists are limited, so they are not a complete audit log. The Library section under Status summarizes the last run and scan.
+
+= How do I retry? =
+
+When a finished apply or remove run has saved retryable problems, choose Retry them in its result or Recent runs > Details. This starts a new run and checks those images again. Fix other problems before starting another run. If a result is unconfirmed, wait for the automatic status check rather than resending it.
 
 = Can I skip very small images? =
 
-Yes. Enable the small-image threshold option in the Watermark settings and set a minimum width and/or height. Images below the configured limit are skipped.
+Yes. Enable the small-image threshold option in the Watermark settings and set a minimum width and/or height. Images below the configured limit are not watermarked; the apply is refused.
+
+= Which scan check should I use? =
+
+Use Quick check for a faster review of stored information, file sizes and image headers. Full check also decodes images, compares recorded checksums and validates clean sources. Scans change no images, and neither check guarantees that a later operation will succeed.
 
 = Does frontend image protection fully secure my images? =
 
@@ -115,6 +141,15 @@ No. The right-click, drag-and-drop, and developer-tools protections are browser-
 3. screenshot-3.png
 
 == Changelog ==
+
+= 2.1.0 =
+* New: Bulk Processing tab to apply, remove or scan watermarks on existing images, with an estimate before you start, live progress and a retry for images that failed
+* New: Send Media Library selections of more than 20 images to Bulk Processing
+* New: See why an image's last watermark operation did not succeed in the Media Library
+* Tweak: Safer watermark removal and reapply: image sizes are prepared from a clean copy before the live files are replaced
+* Tweak: Keep old thumbnail URLs working after image size changes, where possible
+* Tweak: Detect and report when another plugin regenerates a watermarked image's thumbnails
+* Fix: Record an automatic upload as watermarked only after WordPress has saved its metadata
 
 = 2.0.17 =
 * Fix: Keep other plugins' attachment metadata callbacks running after automatic watermarking
@@ -372,5 +407,5 @@ Initial release
 
 == Upgrade Notice ==
 
-= 2.0.17 =
-Fixes compatibility with other plugins' upload metadata callbacks and preserves image filenames during watermark removal and reapplication. Also improves automatic upload handling, operation reporting, and uninstall cleanup.
+= 2.1.0 =
+Adds Bulk Processing under Settings > Watermark for applying, removing and scanning existing images, a Status Library section, and the Media Library handoff for large selections. Removing or reapplying a watermark now builds the image sizes from a clean temporary copy and saves the metadata once.

@@ -14,6 +14,13 @@ if ( ! defined( 'IMAGE_WATERMARK_UNINSTALL_OPTION' ) ) {
 	define( 'IMAGE_WATERMARK_UNINSTALL_OPTION', 'image_watermark_options' );
 }
 
+if ( ! defined( 'IMAGE_WATERMARK_UNINSTALL_RUN_OPTIONS' ) ) {
+	define( 'IMAGE_WATERMARK_UNINSTALL_RUN_OPTIONS', [
+		'image_watermark_active_run',
+		'image_watermark_run_history',
+	] );
+}
+
 if ( ! defined( 'IMAGE_WATERMARK_UNINSTALL_META_KEYS' ) ) {
 	define( 'IMAGE_WATERMARK_UNINSTALL_META_KEYS', [
 		'iw-is-watermarked',
@@ -22,6 +29,9 @@ if ( ! defined( 'IMAGE_WATERMARK_UNINSTALL_META_KEYS' ) ) {
 		'_iw_operation_journal',
 		'_iw_client_side_upload',
 		'_iw_client_side_finalize_payload',
+		'_iw_original_provenance',
+		'_iw_watermark_manifest',
+		'_iw_derivative_drift',
 	] );
 }
 
@@ -132,6 +142,15 @@ if ( ! function_exists( 'image_watermark_uninstall_site' ) ) {
 		image_watermark_uninstall_idle_leases();
 
 		delete_option( IMAGE_WATERMARK_UNINSTALL_OPTION );
+		foreach ( IMAGE_WATERMARK_UNINSTALL_RUN_OPTIONS as $option_name ) {
+			delete_option( $option_name );
+			wp_cache_delete( $option_name, 'options' );
+			wp_cache_delete( 'notoptions', 'options' );
+			$alloptions = wp_cache_get( 'alloptions', 'options' );
+			if ( is_array( $alloptions ) && array_key_exists( $option_name, $alloptions ) ) {
+				wp_cache_delete( 'alloptions', 'options' );
+			}
+		}
 
 		foreach ( IMAGE_WATERMARK_UNINSTALL_META_KEYS as $meta_key ) {
 			delete_post_meta_by_key( $meta_key );

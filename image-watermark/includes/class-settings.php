@@ -10,6 +10,7 @@ if ( ! defined( 'ABSPATH' ) )
  */
 class Image_Watermark_Settings {
 	private $plugin;
+	private $bulk_months = null;
 
 	/**
 	 * Class constructor.
@@ -21,9 +22,11 @@ class Image_Watermark_Settings {
 
 		// filters
 		add_filter( 'wp_redirect', [ $this, 'preserve_tab_on_redirect' ], 10, 2 );
+		add_action( 'check_admin_referer', [ $this, 'refuse_bulk_settings_submission' ], 10, 2 );
 		
 		// Initialize Settings API
 		add_filter( 'iw_settings_pages', [ $this, 'settings_pages' ] );
+		add_action( 'load-settings_page_image-watermark', [ $this, 'prefetch_bulk_months' ] );
 		add_filter( 'iw_settings_data', [ $this, 'settings_data' ] );
 		add_action( 'iw_settings_form', [ $this, 'settings_form' ], 10, 4 );
 		add_action( 'iw_settings_sidebar', [ $this, 'render_settings_sidebar' ], 10, 4 );
@@ -47,16 +50,126 @@ class Image_Watermark_Settings {
 	 * @return array
 	 */
 	public function settings_pages( $pages ) {
+		$settings = $this->get_settings_data();
+		$settings['status']['label'] = __( 'Status', 'image-watermark' );
 		$pages['image-watermark'] = [
 			'menu_slug'  => 'image-watermark',
 			'page_title' => __( 'Image Watermark Options', 'image-watermark' ),
 			'menu_title' => __( 'Watermark', 'image-watermark' ),
 			'capability' => 'manage_options',
 			'type'       => 'settings_page',
-			'tabs'       => $this->get_settings_data()
+			'tabs'       => [
+				'watermark'  => $settings['watermark'],
+				'protection' => $settings['protection'],
+				'bulk'       => $settings['bulk'],
+				'status'     => $settings['status'],
+			]
 		];
 		
 		return $pages;
+	}
+
+	/**
+	 * Resolve the Bulk upload months before core prints notices on this screen.
+	 *
+	 * On options-general.php core prints queued notices from options-head.php
+	 * before the page callback runs, so a failed lookup made inside
+	 * options_page() would be queued after those notices and never shown.
+	 *
+	 * @return void
+	 */
+	public function prefetch_bulk_months() {
+		$tab = isset( $_GET['tab'] ) && is_string( $_GET['tab'] ) ? sanitize_key( wp_unslash( $_GET['tab'] ) ) : 'watermark';
+		if ( $tab === 'bulk' ) {
+			$this->bulk_month_options();
+		}
+	}
+
+	/**
+	 * Render one empty placeholder for a Bulk Processing control group.
+	 *
+	 * @param string $role Row identifier used by the bundled runner client.
+	 * @return void
+	 */
+	private function render_bulk_row( $role ) {
+		echo '<div class="iw-runner" data-role="row-' . esc_attr( $role ) . '"></div>';
+	}
+
+	/** List only months containing supported image attachments. */
+	public function bulk_month_options() {
+		global $wpdb, $wp_locale;
+		if ( $this->bulk_months !== null ) { return $this->bulk_months; }
+		$months = apply_filters( 'media_library_months_with_files', null );
+		$valid = is_array( $months );
+		if ( $valid ) {
+			foreach ( $months as $month ) {
+				if ( ! is_object( $month ) || ! isset( $month->year, $month->month ) || ( ! is_int( $month->year ) && ! is_string( $month->year ) ) || ( ! is_int( $month->month ) && ! is_string( $month->month ) ) || ! preg_match( '/^[0-9]+$/D', (string) $month->year ) || ! preg_match( '/^[0-9]+$/D', (string) $month->month ) || (int) $month->year < 1970 || (int) $month->year > 9999 || (int) $month->month < 1 || (int) $month->month > 12 ) {
+					$valid = false;
+					break;
+				}
+			}
+		}
+		if ( ! $valid ) {
+			$months = $wpdb->get_results( "SELECT DISTINCT YEAR(post_date) AS year, MONTH(post_date) AS month FROM {$wpdb->posts} WHERE BINARY post_type = 'attachment' AND BINARY post_mime_type IN ('image/jpeg','image/png','image/webp') AND YEAR(post_date) BETWEEN 1970 AND 9999 AND MONTH(post_date) BETWEEN 1 AND 12 ORDER BY year DESC, month DESC" );
+			if ( $wpdb->last_error ) {
+				add_settings_error( 'image_watermark_options', 'iw_month_query_failed', __( 'Could not load upload months.', 'image-watermark' ), 'error' );
+				$months = [];
+			}
+		}
+		usort( $months, static function( $a, $b ) {
+			return ( (int) $b->year * 12 + (int) $b->month ) <=> ( (int) $a->year * 12 + (int) $a->month );
+		} );
+		$options = [ '' => __( 'All dates', 'image-watermark' ) ];
+		foreach ( $months as $month ) {
+			$key = sprintf( '%04d-%02d', $month->year, $month->month );
+			/* translators: %1$s: localized month name; %2$d: year. */
+			$options[ $key ] = sprintf( __( '%1$s %2$d', 'image-watermark' ), $wp_locale->get_month( (int) $month->month ), $month->year );
+		}
+		$this->bulk_months = $options;
+		return $options;
+	}
+
+	/**
+	 * Selection line and the hidden target-source controller.
+	 *
+	 * The controller is never removed from the DOM while its row is hidden, so
+	 * the conditional engine can always evaluate the conditions that read it.
+	 *
+	 * @param array $args
+	 * @return void
+	 */
+	public function render_bulk_selection( $args ) {
+		$source = is_string( $args['value'] ) ? $args['value'] : '';
+		echo '<input id="' . esc_attr( $args['html_id'] ) . '-source" type="hidden" value="' . esc_attr( $source ) . '" data-role="target-source" />';
+		echo '<p class="description" data-role="selection-line"></p>';
+	}
+
+	/**
+	 * Actions row placeholder, with the no-script notice.
+	 *
+	 * @return void
+	 */
+	public function render_bulk_actions() {
+		$this->render_bulk_row( 'actions' );
+		echo '<noscript>' . esc_html__( 'JavaScript is required for bulk processing.', 'image-watermark' ) . '</noscript>';
+	}
+
+	/**
+	 * Progress row placeholder.
+	 *
+	 * @return void
+	 */
+	public function render_bulk_progress() {
+		$this->render_bulk_row( 'progress' );
+	}
+
+	/**
+	 * Recent runs row placeholder.
+	 *
+	 * @return void
+	 */
+	public function render_bulk_recent_runs() {
+		$this->render_bulk_row( 'recent-runs' );
 	}
 
 	/**
@@ -86,7 +199,7 @@ class Image_Watermark_Settings {
 	 * @return void
 	 */
 	public function render_settings_sidebar( $setting, $page_type, $url_page, $tab_key ) {
-		if ( $page_type !== 'settings_page' ) {
+		if ( $page_type !== 'settings_page' || $url_page !== 'options-general.php' ) {
 			return;
 		}
 
@@ -164,15 +277,15 @@ class Image_Watermark_Settings {
 	 * @return string
 	 */
 	public function preserve_tab_on_redirect( $location, $status ) {
-		// Only on settings update
-		if ( strpos( $location, 'page=image-watermark' ) === false )
+		// Only alter redirects to this screen after a settings form submission.
+		$query = wp_parse_url( $location, PHP_URL_QUERY );
+		parse_str( is_string( $query ) ? $query : '', $args );
+		if ( ! isset( $args['page'] ) || $args['page'] !== 'image-watermark' || ! isset( $_POST['iw_current_tab'] ) || ! is_string( $_POST['iw_current_tab'] ) )
 			return $location;
 
-		// Get the tab from POST or current
-		$tab = isset( $_POST['iw_current_tab'] ) ? sanitize_key( $_POST['iw_current_tab'] ) : '';
-
-		if ( empty( $tab ) )
-			$tab = isset( $_GET['tab'] ) ? sanitize_key( $_GET['tab'] ) : 'watermark';
+		$tab = sanitize_key( wp_unslash( $_POST['iw_current_tab'] ) );
+		if ( ! in_array( $tab, [ 'status', 'watermark', 'protection' ], true ) )
+			return $location;
 
 		// Add or update tab parameter
 		$location = add_query_arg( 'tab', $tab, $location );
@@ -191,6 +304,10 @@ class Image_Watermark_Settings {
 		$image_sizes[] = 'full';
 		sort( $image_sizes, SORT_STRING );
 		$image_sizes_options = array_combine( $image_sizes, $image_sizes );
+		$bulk_handoff = Image_Watermark_Runner::available_handoff();
+		$bulk_operation = ! empty( $bulk_handoff['value']['operation'] ) ? $bulk_handoff['value']['operation'] : '';
+
+		$bulk_source = ! empty( $bulk_handoff ) ? 'handoff' : '';
 		$post_types = array_merge( [ 'post', 'page' ], get_post_types( [ '_builtin' => false ], 'names' ) );
 		sort( $post_types, SORT_STRING );
 		$post_type_options = array_combine( $post_types, $post_types );
@@ -578,6 +695,203 @@ class Image_Watermark_Settings {
 					],
 				],
 			],
+			'bulk' => [
+				'option_name' => 'image_watermark_options',
+				'validate'    => [ $this, 'validate_settings' ],
+				'label'       => __( 'Bulk Processing', 'image-watermark' ),
+				'heading'     => $page_heading,
+				// The tab has no form: its setup fields are skip_saving and the run rows are mount points.
+				'form'        => [ 'buttons' => false ],
+				'sections'    => [
+					'image_watermark_bulk_setup' => [
+						'title' => __( 'Choose images', 'image-watermark' ),
+					],
+					'image_watermark_bulk_run' => [
+						'title' => __( 'Status and history', 'image-watermark' ),
+					],
+				],
+				'fields'      => [
+					'operation' => [
+						'title'    => __( 'Operation', 'image-watermark' ),
+						'section'  => 'image_watermark_bulk_setup',
+						'type'     => 'select',
+						'options'  => [
+							''           => __( 'Choose an operation', 'image-watermark' ),
+							'apply'      => __( 'Apply watermark', 'image-watermark' ),
+							'remove'     => __( 'Remove watermark', 'image-watermark' ),
+							'scan'       => __( 'Scan', 'image-watermark' ),
+						],
+						'value'    => $bulk_operation,
+						'description' => __( 'Choose an operation to see what it does.', 'image-watermark' ),
+						'aria_label' => __( 'Operation', 'image-watermark' ),
+						'aria_describedby' => true,
+						'skip_saving' => true,
+					],
+					'images' => [
+						'title'    => __( 'Images', 'image-watermark' ),
+						'section'  => 'image_watermark_bulk_setup',
+						'type'     => 'select',
+						'options'  => [
+							'all'     => __( 'All images', 'image-watermark' ),
+							'ids'     => __( 'Selected IDs', 'image-watermark' ),
+							'filters' => __( 'Filtered images', 'image-watermark' ),
+						],
+						'value'    => 'all',
+						'choice_descriptions' => [
+							'all' => __( 'Process all supported images in the Media Library.', 'image-watermark' ),
+							'ids' => __( 'Process only the attachment IDs you enter.', 'image-watermark' ),
+							'filters' => __( 'Process images matching the selected filters.', 'image-watermark' ),
+						],
+						'description' => __( 'Process all supported images in the Media Library.', 'image-watermark' ),
+						'aria_describedby' => true,
+						'aria_label' => __( 'Images', 'image-watermark' ),
+						'condition' => [
+							'field'    => 'selection_source',
+							'operator' => 'is',
+							'value'    => '',
+						],
+						'animation' => 'slide',
+						'skip_saving' => true,
+					],
+					'attachment_ids' => [
+						'title'    => '',
+						'section'  => 'image_watermark_bulk_setup',
+						'type'     => 'input',
+						'subclass' => 'regular-text',
+						'value'    => '',
+						'description' => __( 'Enter attachment IDs separated by commas.', 'image-watermark' ),
+						'aria_label' => __( 'Attachment IDs', 'image-watermark' ),
+						'aria_describedby' => true,
+						'condition' => [
+							[ 'field' => 'images', 'operator' => 'is', 'value' => 'ids' ],
+							[ 'field' => 'selection_source', 'operator' => 'is', 'value' => '' ],
+						],
+						'animation' => 'slide',
+						'skip_saving' => true,
+					],
+					'watermarked' => [
+						'title'    => '',
+						'section'  => 'image_watermark_bulk_setup',
+						'type'     => 'select',
+						'options'  => [
+							''      => __( 'Any watermark state', 'image-watermark' ),
+							'true'  => __( 'Watermarked only', 'image-watermark' ),
+							'false' => __( 'Not watermarked', 'image-watermark' ),
+						],
+						'value'    => '',
+						'description' => __( 'Limit images by whether they already carry a watermark.', 'image-watermark' ),
+						'aria_label' => __( 'Watermarked state', 'image-watermark' ),
+						'aria_describedby' => true,
+						'condition' => [
+							[ 'field' => 'images', 'operator' => 'is', 'value' => 'filters' ],
+							[ 'field' => 'selection_source', 'operator' => 'is', 'value' => '' ],
+						],
+						'animation' => 'slide',
+						'skip_saving' => true,
+					],
+					'upload_dates_from' => [
+						'title' => '',
+						'aria_label' => __( 'From', 'image-watermark' ),
+						'description' => __( 'Include images uploaded in or after this month.', 'image-watermark' ), 'aria_describedby' => true,
+						'section' => 'image_watermark_bulk_setup', 'type' => 'select',
+						'options_callback' => [ $this, 'bulk_month_options' ], 'value' => '', 'skip_saving' => true,
+						'condition' => [
+							[ 'field' => 'images', 'operator' => 'is', 'value' => 'filters' ],
+							[ 'field' => 'selection_source', 'operator' => 'is', 'value' => '' ],
+						], 'animation' => 'slide',
+					],
+					'upload_dates_to' => [
+						'title' => '',
+						'aria_label' => __( 'Through', 'image-watermark' ),
+						'description' => __( 'Include images uploaded in or before this month.', 'image-watermark' ), 'aria_describedby' => true,
+						'section' => 'image_watermark_bulk_setup', 'type' => 'select',
+						'options_callback' => [ $this, 'bulk_month_options' ], 'value' => '', 'skip_saving' => true,
+						'condition' => [
+							[ 'field' => 'images', 'operator' => 'is', 'value' => 'filters' ],
+							[ 'field' => 'selection_source', 'operator' => 'is', 'value' => '' ],
+						], 'animation' => 'slide',
+					],
+					'confirm_all' => [
+						'title'    => '',
+						'section'  => 'image_watermark_bulk_setup',
+						'type'     => 'boolean',
+						'label'    => __( 'I confirm this operation targets all images.', 'image-watermark' ),
+						'value'    => false,
+						'condition' => [
+							[ 'field' => 'images', 'operator' => 'is', 'value' => 'all' ],
+							[ 'field' => 'operation', 'operator' => 'isnot', 'value' => '' ],
+							[ 'field' => 'operation', 'operator' => 'isnot', 'value' => 'scan' ],
+							[ 'field' => 'selection_source', 'operator' => 'is', 'value' => '' ],
+						],
+						'animation' => 'slide',
+						'skip_saving' => true,
+					],
+					'confirm_filters' => [
+						'title'    => '',
+						'section'  => 'image_watermark_bulk_setup',
+						'type'     => 'boolean',
+						'label'    => __( 'I confirm this operation targets all images.', 'image-watermark' ),
+						'value'    => false,
+						'condition' => [
+							[ 'field' => 'images', 'operator' => 'is', 'value' => 'filters' ],
+							[ 'field' => 'watermarked', 'operator' => 'is', 'value' => '' ],
+							[ 'field' => 'upload_dates_from', 'operator' => 'is', 'value' => '' ],
+							[ 'field' => 'upload_dates_to', 'operator' => 'is', 'value' => '' ],
+							[ 'field' => 'operation', 'operator' => 'isnot', 'value' => '' ],
+							[ 'field' => 'operation', 'operator' => 'isnot', 'value' => 'scan' ],
+							[ 'field' => 'selection_source', 'operator' => 'is', 'value' => '' ],
+						],
+						'animation' => 'slide',
+						'skip_saving' => true,
+					],
+					'selection' => [
+						'title'    => '',
+						'section'  => 'image_watermark_bulk_setup',
+						'type'     => 'custom',
+						'callback' => [ $this, 'render_bulk_selection' ],
+						'value'    => $bulk_source,
+						'condition' => [
+							'field'    => 'selection_source',
+							'operator' => 'is',
+							'value'    => 'handoff',
+						],
+						'animation' => 'slide',
+					],
+					'scan_options' => [
+						'title'    => __( 'Scan options', 'image-watermark' ),
+						'section'  => 'image_watermark_bulk_setup',
+						'type'     => 'radio',
+						'options' => [ 'header' => __( 'Quick check (default)', 'image-watermark' ), 'full' => __( 'Full check - slower', 'image-watermark' ) ],
+						'value' => 'header', 'display_type' => 'vertical', 'skip_saving' => true,
+						'description' => __( 'Quick check reads stored information and image headers. Full check also decodes images, verifies checksums and validates clean sources; it is slower and cannot promise later operations succeed.', 'image-watermark' ),
+						'aria_describedby' => true,
+						'condition' => [
+							'field'    => 'operation',
+							'operator' => 'is',
+							'value'    => 'scan',
+						],
+						'animation' => 'slide',
+					],
+					'actions' => [
+						'title'    => '',
+						'section'  => 'image_watermark_bulk_setup',
+						'type'     => 'custom',
+						'callback' => [ $this, 'render_bulk_actions' ],
+					],
+					'progress' => [
+						'title'    => __( 'Progress', 'image-watermark' ),
+						'section'  => 'image_watermark_bulk_run',
+						'type'     => 'custom',
+						'callback' => [ $this, 'render_bulk_progress' ],
+					],
+					'recent_runs' => [
+						'title'    => __( 'Recent runs', 'image-watermark' ),
+						'section'  => 'image_watermark_bulk_run',
+						'type'     => 'custom',
+						'callback' => [ $this, 'render_bulk_recent_runs' ],
+					],
+				],
+			],
 			'protection' => [
 				'option_name' => 'image_watermark_options',
 				'validate'    => [ $this, 'validate_settings' ],
@@ -711,6 +1025,13 @@ class Image_Watermark_Settings {
 			return $this->apply_review_notice_update( $input, $existing );
 		}
 
+		$current_tab = $this->resolve_submission_tab();
+
+		// Keep direct sanitization of the formless Bulk tab free of writes and notices.
+		if ( $current_tab === 'bulk' ) {
+			return get_option( 'image_watermark_options', [] );
+		}
+
 		if ( isset( $_POST['reset_image_watermark_options'] ) ) {
 			$defaults = $this->plugin->defaults['options'];
 			$defaults['watermark_image']['review_notice'] = false;
@@ -739,14 +1060,6 @@ class Image_Watermark_Settings {
 			}
 		}
 
-		$current_tab = isset( $_POST['iw_current_tab'] ) && is_scalar( $_POST['iw_current_tab'] ) ? sanitize_key( $_POST['iw_current_tab'] ) : '';
-		if ( $current_tab === '' && isset( $_GET['tab'] ) && is_scalar( $_GET['tab'] ) ) {
-			$current_tab = sanitize_key( $_GET['tab'] );
-		}
-		if ( $current_tab === '' ) {
-			$current_tab = 'watermark';
-		}
-
 		$config = $this->get_settings_data();
 		if ( ! isset( $config[$current_tab] ) ) {
 			add_settings_error( 'image_watermark_options', 'invalid_tab', __( 'Invalid settings tab. Please try again.', 'image-watermark' ), 'error' );
@@ -764,6 +1077,29 @@ class Image_Watermark_Settings {
 
 		add_settings_error( 'image_watermark_options', 'settings_saved', __( 'Settings saved.', 'image-watermark' ), 'updated' );
 		return $output;
+	}
+
+	/** Resolve the tab identically for the HTTP refusal and the validator. */
+	private function resolve_submission_tab() {
+		$tab = isset( $_POST['iw_current_tab'] ) && is_scalar( $_POST['iw_current_tab'] ) ? sanitize_key( $_POST['iw_current_tab'] ) : '';
+		if ( $tab === '' && isset( $_GET['tab'] ) && is_scalar( $_GET['tab'] ) ) {
+			$tab = sanitize_key( $_GET['tab'] );
+		}
+		return $tab === '' ? 'watermark' : $tab;
+	}
+
+	/** Stop the formless tab's authorized options.php submission before core writes. */
+	public function refuse_bulk_settings_submission( $nonce_action, $result ) {
+		global $pagenow, $action, $option_page;
+
+		// options.php resolves these before its capability and nonce checks. Core
+		// 6.3 uses POST/GET fallback; newer versions resolve from REQUEST.
+		if ( $pagenow !== 'options.php' || $action !== 'update' || $option_page !== 'image_watermark_options' || $nonce_action !== 'image_watermark_options-options' || ! in_array( $result, [ 1, 2 ], true ) || ! current_user_can( 'manage_options' ) || $this->resolve_submission_tab() !== 'bulk' ) {
+			return;
+		}
+
+		wp_safe_redirect( admin_url( 'options-general.php?page=image-watermark&tab=bulk' ) );
+		exit;
 	}
 
 	/**
@@ -1192,7 +1528,7 @@ class Image_Watermark_Settings {
 						<span class="iw-status-dot <?php echo esc_attr( $item['status'] ); ?>"></span>
 						<span class="iw-status-text">
 							<strong><?php echo esc_html( $item['label'] ); ?>:</strong>
-							<?php echo wp_kses_post( $item['message'] ); ?>
+							<?php echo in_array( $item['code'], [ 'sizes_selected', 'sizes_not_selected' ], true ) ? esc_html( $item['message'] ) : wp_kses_post( $item['message'] ); ?>
 							<?php if ( ! empty( $item['hint'] ) ) : ?>
 								<p class="description"><?php echo wp_kses_post( $item['hint'] ); ?></p>
 							<?php endif; ?>
@@ -1202,6 +1538,7 @@ class Image_Watermark_Settings {
 				</ul>
 			</div>
 		<?php endforeach; ?>
+		<?php $this->render_overview_library(); ?>
 		</div>
 
 		<div class="iw-copy-report-wrap">
@@ -1210,6 +1547,122 @@ class Image_Watermark_Settings {
 				<?php esc_html_e( 'Copy Status Report', 'image-watermark' ); ?>
 			</button>
 			<span class="iw-copy-report-notice" aria-live="polite"></span>
+		</div>
+		<?php
+	}
+
+	/** Resolve the site's numeric convention without leaving the viewer's locale switched. */
+	public function count_format_profile() {
+		global $wp_locale;
+		$locale = get_locale();
+		$current = determine_locale();
+		$switched = switch_to_locale( $locale );
+		try {
+			$separator = ( $switched || $current === $locale ) && isset( $wp_locale->number_format['thousands_sep'] )
+				? $wp_locale->number_format['thousands_sep'] : ',';
+			$separator = html_entity_decode( $separator, ENT_QUOTES | ENT_HTML5, 'UTF-8' );
+		} finally {
+			if ( $switched ) { restore_previous_locale(); }
+		}
+		return [ 'locale' => $locale, 'thousandsSeparator' => $separator ];
+	}
+
+	/** Format a count using a previously resolved site profile. */
+	public function format_count( $count, $profile ) {
+		return number_format( $count, 0, '.', $profile['thousandsSeparator'] );
+	}
+
+	/** Describe the stored scan filters without looking up attachments. */
+	private function overview_scan_scope( $target, $count_profile ) {
+		if ( $target['type'] === 'ids' ) {
+			/* translators: %s: number of selected images. */
+			return sprintf( _n( '%s selected image', '%s selected images', $target['count'], 'image-watermark' ), $this->format_count( $target['count'], $count_profile ) );
+		}
+		if ( ! $target['filters'] ) { return __( 'All images', 'image-watermark' ); }
+		$labels = [
+			'date_from' => __( 'From', 'image-watermark' ), 'date_to' => __( 'Through', 'image-watermark' ),
+			'parent' => __( 'Parent type', 'image-watermark' ), 'mime' => __( 'Image type', 'image-watermark' ),
+			'state' => __( 'Watermark record', 'image-watermark' ), 'backup' => __( 'Backup', 'image-watermark' ),
+			'clean_source' => __( 'Clean source', 'image-watermark' ), 'last_outcome' => __( 'Last outcome', 'image-watermark' ),
+			'last_operation' => __( 'Last operation', 'image-watermark' ), 'journal' => __( 'Operation journal', 'image-watermark' ),
+			'client_side' => __( 'Client-side upload', 'image-watermark' ), 'problems_of_run' => __( 'Problems from run', 'image-watermark' ),
+			'condition' => __( 'Image sizes', 'image-watermark' ),
+		];
+		$values = [
+			'legacy' => __( 'legacy', 'image-watermark' ), 'drift_suspected' => __( 'suspected drift', 'image-watermark' ),
+			'drift_verified' => __( 'verified drift', 'image-watermark' ), 'settings_changed' => __( 'settings changed', 'image-watermark' ),
+			'absent' => __( 'absent', 'image-watermark' ), 'present' => __( 'present', 'image-watermark' ), 'validated' => __( 'validated', 'image-watermark' ),
+			'partial' => __( 'partial', 'image-watermark' ), 'skipped' => __( 'skipped', 'image-watermark' ), 'failed' => __( 'failed', 'image-watermark' ),
+			'interrupted' => __( 'interrupted', 'image-watermark' ), 'apply' => __( 'apply', 'image-watermark' ), 'remove' => __( 'remove', 'image-watermark' ),
+			'regenerate' => __( 'regenerate sizes', 'image-watermark' ), 'non_terminal' => __( 'unfinished', 'image-watermark' ),
+			'pending' => __( 'pending', 'image-watermark' ), 'incomplete' => __( 'incomplete', 'image-watermark' ), 'deferred' => __( 'deferred', 'image-watermark' ),
+			'missing_sizes' => __( 'missing sizes', 'image-watermark' ), 'geometry_stale_sizes' => __( 'stale size geometry', 'image-watermark' ),
+			'unproducible_sizes' => __( 'unproducible sizes', 'image-watermark' ),
+		];
+		$parts = [];
+		foreach ( $target['filters'] as $key => $value ) {
+			if ( $key === 'watermarked' ) {
+				$parts[] = $value ? __( 'Watermarked images', 'image-watermark' ) : __( 'Images not watermarked', 'image-watermark' );
+				continue;
+			}
+			$items = array_map( static function ( $item ) use ( $values ) { return isset( $values[ $item ] ) ? $values[ $item ] : $item; }, (array) $value );
+			$parts[] = $labels[ $key ] . ': ' . implode( ', ', $items );
+		}
+		return implode( '; ', $parts );
+	}
+
+	/** Render only stored run summaries; never inspect attachments here. */
+	private function render_overview_library() {
+		$count_profile = $this->count_format_profile();
+		$store = new Image_Watermark_Run_Store();
+		$pruned = $store->merge_history();
+		$history = $store->read_row( Image_Watermark_Run_Store::HISTORY );
+		$active = $store->read_row( Image_Watermark_Run_Store::ACTIVE );
+		$runs = $history['state'] === 'valid' ? $history['value']['runs'] : [];
+		$run = $active['state'] === 'valid' ? $active['value'] : ( $runs ? $runs[0] : null );
+		$scan = null;
+		foreach ( $runs as $summary ) { if ( $summary['operation'] === 'scan' ) { $scan = $summary; break; } }
+		$operations = [ 'apply' => __( 'Apply watermark', 'image-watermark' ), 'remove' => __( 'Remove watermark', 'image-watermark' ), 'regenerate' => __( 'Regenerate sizes', 'image-watermark' ), 'scan' => __( 'Scan', 'image-watermark' ) ];
+		$states = [ 'running' => __( 'Running', 'image-watermark' ), 'paused' => __( 'Paused', 'image-watermark' ), 'stopped' => __( 'Stopped', 'image-watermark' ), 'complete' => __( 'Complete', 'image-watermark' ) ];
+		$history_bad = ! in_array( $history['state'], [ 'valid', 'absent' ], true );
+		$active_bad = ! in_array( $active['state'], [ 'valid', 'absent' ], true );
+		?>
+		<div class="iw-status-section iw-overview" data-url="<?php echo esc_url( admin_url( 'admin-ajax.php' ) ); ?>" data-nonce="<?php echo esc_attr( wp_create_nonce( 'iw_runner' ) ); ?>" data-error="<?php esc_attr_e( 'The request failed. Please try again.', 'image-watermark' ); ?>" data-confirm="<?php esc_attr_e( 'Reset run history and cached health? The active run will not be changed.', 'image-watermark' ); ?>">
+			<h3 class="iw-status-section-heading"><?php esc_html_e( 'Library', 'image-watermark' ); ?></h3>
+			<?php if ( $pruned === 'error' || $history['state'] === 'error' ) : ?><div class="notice notice-error inline"><p><?php esc_html_e( 'Run history could not be read or pruned. Try again later.', 'image-watermark' ); ?></p></div><?php endif; ?>
+			<ul class="iw-status-list">
+				<li class="iw-status-item"><span class="iw-status-dot <?php echo esc_attr( $active_bad ? 'error' : ( $run && ( $run['status'] !== 'complete' || array_sum( $run['counters'] ) !== $run['counters']['complete'] ) ? 'warning' : 'info' ) ); ?>"></span><span class="iw-status-text"><strong><?php esc_html_e( 'Last run:', 'image-watermark' ); ?></strong>
+				<?php if ( $active_bad ) : ?><?php esc_html_e( 'Active run is unreadable; use the malformed run control in Bulk Processing.', 'image-watermark' ); ?>
+				<?php elseif ( $run ) :
+					$problems = array_sum( $run['counters'] ) - $run['counters']['complete'];
+					$when = ! empty( $run['finished'] ) ? $run['finished'] : $run['updated'];
+					/* translators: %s: formatted number of completed images. */
+					$completed_phrase = sprintf( _n( '%s completed image', '%s completed images', $run['counters']['complete'], 'image-watermark' ), $this->format_count( $run['counters']['complete'], $count_profile ) );
+					/* translators: %s: formatted number of problems. */
+					$problems_phrase = sprintf( _n( '%s problem', '%s problems', $problems, 'image-watermark' ), $this->format_count( $problems, $count_profile ) );
+					/* translators: %1$s: operation; %2$s: run status; %3$s: elapsed time; %4$s: completed-image phrase; %5$s: problems phrase. */
+					printf( esc_html__( '%1$s - %2$s, %3$s ago; %4$s, %5$s.', 'image-watermark' ), esc_html( $operations[ $run['operation'] ] ), esc_html( $states[ $run['status'] ] ), esc_html( human_time_diff( $when, time() ) ), esc_html( $completed_phrase ), esc_html( $problems_phrase ) ); ?>
+					<?php if ( isset( $run['claim'] ) && $run['status'] === 'stopped' ) : ?><?php esc_html_e( 'Unresolved claim; release is conditional and has no promised deadline.', 'image-watermark' ); ?><?php endif; ?>
+					<?php if ( $run['pause_reason'] === 'summary_unconfirmed' ) : ?><?php esc_html_e( 'One run-level item is unknown and is not counted as successful; its identity may be unavailable.', 'image-watermark' ); ?><?php endif; ?>
+				<?php elseif ( $history_bad ) : ?><?php esc_html_e( 'Run history is unreadable.', 'image-watermark' ); ?>
+				<?php else : ?><?php esc_html_e( 'No runs yet.', 'image-watermark' ); ?><?php endif; ?>
+				</span></li>
+				<li class="iw-status-item"><span class="iw-status-dot <?php echo esc_attr( $history_bad ? 'error' : ( $scan && ! $scan['complete'] ? 'warning' : 'info' ) ); ?>"></span><span class="iw-status-text"><strong><?php esc_html_e( 'Last scan:', 'image-watermark' ); ?></strong>
+				<?php if ( $history['state'] === 'malformed' ) : ?><?php esc_html_e( 'Run history is malformed. Resetting it removes history and cached health only, not the active run.', 'image-watermark' ); ?> <button type="button" class="button" data-iw-overview-action="reset"><?php esc_html_e( 'Reset history', 'image-watermark' ); ?></button>
+				<?php elseif ( $history['state'] === 'error' ) : ?><?php esc_html_e( 'Run history could not be read. Try again later.', 'image-watermark' ); ?>
+				<?php elseif ( $scan ) :
+					$depth = $scan['scan_depth'] === 'header' ? __( 'Quick scan; backup sources are not validated', 'image-watermark' ) : __( 'Full scan', 'image-watermark' );
+					/* translators: %1$s: date; %2$s: scan depth; %3$s: completion status; %4$s: selection scope. */
+					printf( esc_html__( '%1$s; %2$s; %3$s; %4$s.', 'image-watermark' ), esc_html( wp_date( get_option( 'date_format' ), $scan['finished'] ) ), esc_html( $depth ), esc_html( $scan['complete'] ? __( 'Complete', 'image-watermark' ) : __( 'Incomplete', 'image-watermark' ) ), esc_html( $this->overview_scan_scope( $scan['target'], $count_profile ) ) );
+					$signals = [ 'missing_sizes' => __( 'Images with missing sizes', 'image-watermark' ), 'no_validated_clean_source' => __( 'Watermarked without a validated or readable clean source', 'image-watermark' ), 'legacy_watermarked' => __( 'Legacy watermarked images', 'image-watermark' ) ];
+					foreach ( $signals as $key => $label ) {
+						if ( ! array_key_exists( $key, $scan['scan']['signals'] ) ) { echo ' ' . esc_html( $label . ': ' . __( 'not measured', 'image-watermark' ) . '.' ); }
+						elseif ( $scan['scan']['signals'][ $key ] > 0 ) { echo ' ' . esc_html( $label . ': ' . $this->format_count( $scan['scan']['signals'][ $key ], $count_profile ) . '.' ); }
+					}
+				?><?php else : ?><?php esc_html_e( 'No scans yet.', 'image-watermark' ); ?><?php endif; ?>
+				</span></li>
+			</ul>
+			<p data-iw-overview-message role="status" aria-live="polite"></p>
 		</div>
 		<?php
 	}

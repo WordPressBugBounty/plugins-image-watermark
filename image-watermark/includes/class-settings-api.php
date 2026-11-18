@@ -222,12 +222,8 @@ class Image_Watermark_Settings_API {
 			// get first default tab
 			$first_tab = key( $tabs );
 
-			// get current tab
-			$tab_key = ! empty( $_GET['tab'] ) && array_key_exists( $_GET['tab'], $tabs ) ? $_GET['tab'] : $first_tab;
-
-			// check current tab
-			if ( ! empty( $_GET['tab'] ) )
-				$tab_key = sanitize_key( $_GET['tab'] );
+			// Validate the requested tab before using it as an array key.
+			$tab_key = isset( $_GET['tab'] ) && is_string( $_GET['tab'] ) ? sanitize_key( wp_unslash( $_GET['tab'] ) ) : $first_tab;
 
 			// invalid tab?
 			if ( ! array_key_exists( $tab_key, $tabs ) )
@@ -288,6 +284,9 @@ class Image_Watermark_Settings_API {
 			<div class="content-wrapper">
 			<h1 class="screen-reader-text">' . esc_html( $heading ) . '</h1>';
 
+		// Bulk month choices are request-cached and resolved on
+		// load-settings_page_image-watermark, before core prints notices.
+
 		// skip for internal options page
 		if ( $page_type !== 'settings_page' )
 			settings_errors();
@@ -340,12 +339,15 @@ class Image_Watermark_Settings_API {
 		if ( $display_form ) {
 			echo '
 				<form action="options.php" method="post" novalidate class="' . esc_attr( $this->prefix ) . '-settings-form">';
-		}
 
-		settings_fields( $setting );
+			settings_fields( $setting );
 
-		if ( $display_form )
 			do_action( $this->prefix . '_settings_form', $setting, $page_type, $url_page, $tab_key );
+		} else {
+			// A formless tab carries the Pico scope class on its wrapper instead.
+			echo '
+				<div class="' . esc_attr( $this->prefix ) . '-settings-form">';
+		}
 
 		// Filter sections for current tab
 		global $wp_settings_sections;
@@ -387,6 +389,9 @@ class Image_Watermark_Settings_API {
 			echo '
 					</p>
 				</form>';
+		} else {
+			echo '
+				</div>';
 		}
 
 		// output sidebar if it has content
@@ -595,7 +600,9 @@ class Image_Watermark_Settings_API {
 			'default'		=> $default,
 			'value'			=> $value,
 			'setting_id'    => $setting_id,
-			'animation'     => ! empty( $field['animation'] ) ? $field['animation'] : ''
+			'animation'     => ! empty( $field['animation'] ) ? $field['animation'] : '',
+			'aria_label'    => ! empty( $field['aria_label'] ) ? $field['aria_label'] : '',
+			'aria_describedby' => ! empty( $field['aria_describedby'] ) ? (string) $field['aria_describedby'] : ''
 			/*
 			after_field
 			before_field
@@ -676,6 +683,10 @@ class Image_Watermark_Settings_API {
 
 		$html = '<div id="' . esc_attr( $args['html_id'] ) . '-setting"' . ( ! empty( $div_classes ) ? ' class="' . esc_attr( implode( ' ', $div_classes ) ) . '"' : '' ) . $data_attrs . '>';
 
+		$aria_label = ! empty( $args['aria_label'] ) ? ' aria-label="' . esc_attr( $args['aria_label'] ) . '"' : '';
+		$description_id = ! empty( $args['aria_describedby'] ) ? esc_attr( $args['html_id'] ) . '-description' : '';
+		$aria_describedby = $description_id !== '' ? ' aria-describedby="' . $description_id . '"' : '';
+
 		if ( ! empty ( $args['before_field'] ) )
 			$html .= $args['before_field'];
 
@@ -684,7 +695,7 @@ class Image_Watermark_Settings_API {
 				if ( empty( $args['disabled'] ) )
 					$html .= '<input type="hidden" name="' . esc_attr( $args['name'] ) . '" value="false" />';
 
-				$html .= '<label><input id="' . esc_attr( $args['html_id'] ) . '" type="checkbox" role="switch" name="' . esc_attr( $args['name'] ) . '" value="true" ' . checked( (bool) $args['value'], true, false ) . ' ' . disabled( empty( $args['disabled'] ), false, false ) . ' />' . esc_html( $args['label'] ) . '</label>';
+				$html .= '<label><input id="' . esc_attr( $args['html_id'] ) . '" type="checkbox" role="switch" name="' . esc_attr( $args['name'] ) . '" value="true" ' . $aria_label . $aria_describedby . ' ' . checked( (bool) $args['value'], true, false ) . ' ' . disabled( empty( $args['disabled'] ), false, false ) . ' />' . esc_html( $args['label'] ) . '</label>';
 				break;
 
 			case 'radio':
@@ -698,7 +709,7 @@ class Image_Watermark_Settings_API {
 
 				foreach ( $args['options'] as $key => $name ) {
 					$option_id = esc_attr( $args['html_id'] . '-' . $key );
-					$html .= '<label for="' . $option_id . '"><input id="' . $option_id . '" type="radio" name="' . esc_attr( $args['name'] ) . '" value="' . esc_attr( $key ) . '" ' . checked( $key, $args['value'], false ) . ' ' . disabled( ! empty( $args['disabled'] ) && in_array ( $key, $args['disabled'], true ), true, false ) . ' />' . esc_html( $name ) . '</label>';
+					$html .= '<label for="' . $option_id . '"><input id="' . $option_id . '" type="radio" name="' . esc_attr( $args['name'] ) . '" value="' . esc_attr( $key ) . '"' . $aria_describedby . ' ' . checked( $key, $args['value'], false ) . ' ' . disabled( ! empty( $args['disabled'] ) && in_array ( $key, $args['disabled'], true ), true, false ) . ' />' . esc_html( $name ) . '</label>';
 				}
 
 				if ( count( $args['options'] ) > 1 )
@@ -730,7 +741,8 @@ class Image_Watermark_Settings_API {
 				break;
 
 			case 'select':
-				$html .= '<select id="' . esc_attr( $args['html_id'] ) . '" name="' . esc_attr( $args['name'] ) . '" ' . disabled( empty( $args['disabled'] ), false, false ) . '/>';
+				if ( ! empty( $args['options_callback'] ) && is_callable( $args['options_callback'] ) ) { $args['options'] = call_user_func( $args['options_callback'] ); }
+				$html .= '<select id="' . esc_attr( $args['html_id'] ) . '" name="' . esc_attr( $args['name'] ) . '"' . $aria_label . $aria_describedby . ' ' . disabled( empty( $args['disabled'] ), false, false ) . '/>';
 
 				foreach ( $args['options'] as $key => $name ) {
 					$html .= '<option value="' . esc_attr( $key ) . '" ' . selected( $args['value'], $key, false ) . '>' . esc_html( $name ) . '</option>';
@@ -793,7 +805,7 @@ class Image_Watermark_Settings_API {
 				$subclass = ! empty( $args['subclass'] ) ? $args['subclass'] : 'text-regular';
 
 				$html .= ( ! empty( $args['prepend'] ) ? wp_kses_post( $args['prepend'] ) : '' );
-				$html .= '<input id="' . esc_attr( $args['html_id'] ) . '" class="' . esc_attr( $args['subclass'] ) . '" type="text" value="' . esc_attr( $args['value'] ) . '" name="' . esc_attr( $args['name'] ) . '" ' . disabled( $empty_disabled, false, false ) . '/>';
+				$html .= '<input id="' . esc_attr( $args['html_id'] ) . '" class="' . esc_attr( $args['subclass'] ) . '" type="text" value="' . esc_attr( $args['value'] ) . '" name="' . esc_attr( $args['name'] ) . '"' . $aria_label . $aria_describedby . ' ' . disabled( $empty_disabled, false, false ) . '/>';
 				$html .= ( ! empty( $args['append'] ) ? wp_kses_post( $args['append'] ) : '' );
 
 				if ( ! $empty_disabled )
@@ -804,7 +816,7 @@ class Image_Watermark_Settings_API {
 			$html .= wp_kses_post( $args['after_field'] );
 
 		if ( ! empty ( $args['description'] ) )
-			$html .= '<p class="description">' . wp_kses_post( $args['description'] ) . '</p>';
+			$html .= '<p class="description"' . ( $description_id !== '' ? ' id="' . $description_id . '"' : '' ) . '>' . wp_kses_post( $args['description'] ) . '</p>';
 
 		$html .= '</div>';
 

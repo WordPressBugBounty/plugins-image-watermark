@@ -150,6 +150,13 @@ class Image_Watermark_Diagnostics {
 		);
 
 		if ( ! $metadata_ok ) {
+			$facts = $this->plugin->get_upload_handler()->describe_derivative_diagnostics( $attachment_id, is_array( $data ) ? $data : [] );
+			$items[] = $this->provenance_item( $facts['provenance'] );
+			$items = array_merge( $items, $this->recovery_items( $facts ) );
+			$manifest_item = $this->manifest_item( $attachment_id, $facts['backup_usable'] );
+			if ( $manifest_item !== null ) { $items[] = $manifest_item; }
+			$last_op_item = $this->last_operation_item( $attachment_id );
+			if ( $last_op_item !== null ) { $items[] = $last_op_item; }
 			return $items;
 		}
 
@@ -368,14 +375,23 @@ class Image_Watermark_Diagnostics {
 		$backup_path    = $relative_path ? $backup_lookup['path'] : false;
 		$backup_exists  = $backup_path && $this->plugin->get_upload_handler()->is_valid_backup_file( $backup_path );
 
+		$facts = $this->plugin->get_upload_handler()->describe_derivative_diagnostics( $attachment_id, $data );
+		$items[] = $this->provenance_item( $facts['provenance'] );
+
+		if ( is_string( $relative_path ) && $relative_path !== '' && wp_normalize_path( $relative_path ) !== wp_normalize_path( $data['file'] ) && $eligibility['code'] !== 'client_side_upload_unfinalized' ) {
+			// P10-04 C6 / A-P10-1 Scope 3: no 2.1 text names Regenerate sizes as an action. F03-2b advice is restore-or-re-upload in both branches.
+			$items[] = $this->item( 'attachment_file_diverged', self::STATUS_WARNING, __( 'Attachment file', 'image-watermark' ), __( 'The registered image file differs from the attached file.', 'image-watermark' ), __( 'Restore the image with the tool that changed it, or re-upload it.', 'image-watermark' ) );
+		}
+		$items = array_merge( $items, $this->recovery_items( $facts ) );
+
 		$inventory_item = $this->item(
 			'attachment_file_inventory',
 			self::STATUS_INFO,
 			__( 'File inventory', 'image-watermark' ),
-			__( 'The full attachment file and selected generated sizes are watermark targets. A WordPress -scaled attachment file is the full target when selected. A separately retained original_image file is not a current watermark target. File URLs may be derivable, but this diagnostic does not test HTTP access. Backup locations are not disclosed.', 'image-watermark' ),
+			__( 'The full attachment file and selected generated sizes are watermark targets. The watermarked indicator reflects the attachment flag and current selection, not proof of each file. Watermark-record details describe the last trusted operation, not a current file check. A WordPress -scaled attachment file is the full target when selected. A separately retained original_image file is not a current watermark target. File URLs may be derivable, but this diagnostic does not test HTTP access. Backup locations are not disclosed.', 'image-watermark' ),
 			__( 'Verify public-file and backup access with unauthenticated requests on the deployed server. Server access rules, not browser copy deterrents, control file access.', 'image-watermark' )
 		);
-		$inventory_item['inventory'] = $this->build_attachment_file_inventory( $data, $source_file, $upload_dir, $selected_sizes, $is_watermarked, $backup_exists, $attachment_id );
+		$inventory_item['inventory'] = $this->build_attachment_file_inventory( $data, $source_file, $upload_dir, $selected_sizes, $is_watermarked, $backup_exists, $attachment_id, $facts['geometry'], $backup_exists && $facts['backup_usable'] );
 		$items[] = $inventory_item;
 
 		if ( $relative_path && $backup_lookup['code'] !== '' && $backup_lookup['code'] !== 'backup_missing' ) {
@@ -420,6 +436,12 @@ class Image_Watermark_Diagnostics {
 				$can_remove ? '' : ( $is_watermarked ? __( 'A verified clean backup is required before the watermark can be removed.', 'image-watermark' ) : '' )
 		);
 
+		// Watermark record
+		$manifest_item = $this->manifest_item( $attachment_id, $backup_exists && $facts['backup_usable'] );
+		if ( $manifest_item !== null ) {
+			$items[] = $manifest_item;
+		}
+
 		// Last operation
 		$last_op_item = $this->last_operation_item( $attachment_id );
 		if ( $last_op_item !== null ) {
@@ -427,6 +449,116 @@ class Image_Watermark_Diagnostics {
 		}
 
 		return $items;
+	}
+
+	/** @return array Upload provenance without disclosing the recorded filename. */
+	private function provenance_item( $status ) {
+		$messages = [
+			'matching' => __( 'The recorded upload still matches its file.', 'image-watermark' ),
+			'mismatched' => __( 'The recorded upload no longer matches its file or cannot be verified.', 'image-watermark' ),
+			'absent' => __( 'No upload record is available for this image.', 'image-watermark' ),
+		];
+		return $this->item( 'provenance_' . $status, $status === 'mismatched' ? self::STATUS_WARNING : self::STATUS_INFO, __( 'Original upload', 'image-watermark' ), $messages[ $status ], $status === 'matching' ? __( 'No action is needed.', 'image-watermark' ) : __( 'Use a verified clean backup or re-upload the original if regeneration needs a clean source.', 'image-watermark' ) );
+	}
+
+	/** @return array Path-free recovery diagnostics from the current site's journal and bounded directory scan. */
+	private function recovery_items( $facts ) {
+		$items = [];
+		if ( $facts['journal_unreadable'] ) {
+			$items[] = $this->item( 'operation_journal_unreadable', self::STATUS_WARNING, __( 'Operation recovery', 'image-watermark' ), __( 'The image operation journal cannot be verified.', 'image-watermark' ), __( 'Review the image and recovery state on the server before retrying an operation.', 'image-watermark' ) );
+		}
+		if ( $facts['operation_incomplete'] ) {
+			$items[] = $this->item( 'operation_incomplete', self::STATUS_WARNING, __( 'Operation recovery', 'image-watermark' ), __( 'A watermark operation is in progress or did not complete.', 'image-watermark' ), __( 'Wait for an active operation to finish or review the last result and retry with a verified clean source.', 'image-watermark' ) );
+		}
+		if ( $facts['interrupted'] ) {
+			$items[] = $this->item( 'regeneration_interrupted', self::STATUS_WARNING, __( 'Regeneration', 'image-watermark' ), __( 'An image-size regeneration did not complete.', 'image-watermark' ), __( 'Review the last result before applying or removing the watermark again.', 'image-watermark' ) );
+		}
+		if ( $facts['main_recovery'] ) {
+			$items[] = $this->item( 'main_recovery_retained', self::STATUS_WARNING, __( 'Recovery source', 'image-watermark' ), __( 'A recovery copy was retained by an image operation.', 'image-watermark' ), __( 'Retry the operation; do not delete its recovery copy.', 'image-watermark' ) );
+		}
+		if ( $facts['legacy_limit'] ) {
+			$item = $this->item( 'legacy_limit_reached', self::STATUS_WARNING, __( 'Unresolved image sizes', 'image-watermark' ), __( 'Some older image-size files could not be recorded safely.', 'image-watermark' ), __( 'Review these sizes manually before removing any files; retry with stale-file cleanup only if appropriate.', 'image-watermark' ) );
+			$item['sizes'] = $facts['legacy_limit'];
+			$items[] = $item;
+		}
+		if ( $facts['stages'] ) {
+			$item = $this->item( 'orphan_stage_files', self::STATUS_WARNING, __( 'Stage-named files', 'image-watermark' ), __( 'Files with image-operation stage names remain in this image directory.', 'image-watermark' ), __( 'These files may be referenced or needed for recovery. Check their references and the interrupted operation before removing anything.', 'image-watermark' ) );
+			$item['files'] = $facts['stages'];
+			$items[] = $item;
+		}
+		if ( $facts['scan_incomplete'] ) {
+			$items[] = $this->item( 'orphan_scan_incomplete', self::STATUS_WARNING, __( 'Staging file scan', 'image-watermark' ), __( 'The bounded staging-file scan could not inspect or list every entry.', 'image-watermark' ), __( 'Inspect the image directory on the server for remaining staging files.', 'image-watermark' ) );
+		}
+		return $items;
+	}
+
+	/**
+	 * Describe the attachment's watermark record (manifest), or null when the
+	 * attachment has none and is not watermarked. A derivative drift marker on
+	 * a watermarked attachment takes precedence: verified drift (only while the
+	 * record it was checked against is still trusted), then a suspected foreign
+	 * regeneration, which without a trusted record cannot be verified (legacy
+	 * unknown). A marker left on an unwatermarked attachment is history and is
+	 * not reported.
+	 *
+	 * @param int  $attachment_id Attachment ID.
+	 * @param bool $backup_usable Whether a clean backup reapply can use exists (valid,
+	 *                            and matching the attached file's dimensions and format).
+	 * @return array|null
+	 */
+	private function manifest_item( $attachment_id, $backup_usable = false ) {
+		$handler = $this->plugin->get_upload_handler();
+		$status = $handler->describe_manifest_status( $attachment_id );
+		$label  = __( 'Watermark status', 'image-watermark' );
+		$flagged = (int) get_post_meta( $attachment_id, $this->plugin->get_watermarked_meta_key(), true ) === 1;
+		$drift = $flagged ? $handler->describe_derivative_drift( $attachment_id ) : [ 'state' => 'none' ];
+		// Reapply needs the validated clean backup; without it only restore or re-upload remain.
+		$repair = $backup_usable
+			? __( 'Apply the watermark again, or restore the image with the tool that changed it or re-upload it.', 'image-watermark' )
+			: __( 'Restore the image with the tool that changed it, or re-upload it.', 'image-watermark' );
+
+		if ( $drift['state'] === 'verified' && $drift['verifiable'] ) {
+			$value = $drift['current']
+				/* translators: %d: number of differences found */
+				? sprintf( _n( 'Another plugin or WordPress rebuilt this image outside Image Watermark; its files no longer match the last verified watermark operation (%d difference).', 'Another plugin or WordPress rebuilt this image outside Image Watermark; its files no longer match the last verified watermark operation (%d differences).', $drift['mismatch_count'], 'image-watermark' ), $drift['mismatch_count'] )
+				/* translators: %d: number of differences found */
+				: sprintf( _n( 'Another plugin or WordPress rebuilt this image outside Image Watermark; when last checked its files did not match the last verified watermark operation (%d difference), and it was rebuilt again since.', 'Another plugin or WordPress rebuilt this image outside Image Watermark; when last checked its files did not match the last verified watermark operation (%d differences), and it was rebuilt again since.', $drift['mismatch_count'], 'image-watermark' ), $drift['mismatch_count'] );
+			return $this->item( 'drift_verified', self::STATUS_WARNING, $label, $value, $repair );
+		}
+		if ( $drift['state'] !== 'none' ) {
+			if ( ! $drift['verifiable'] ) {
+				$value = __( 'Another plugin or WordPress rebuilt this image outside Image Watermark. Without verified details of the watermark operation the files cannot be checked.', 'image-watermark' );
+			} elseif ( $drift['current'] ) {
+				$value = __( 'Another plugin or WordPress rebuilt this image outside Image Watermark; its files still match the last verified watermark operation.', 'image-watermark' );
+			} else {
+				$value = __( 'Another plugin or WordPress rebuilt this image outside Image Watermark; its files have not been checked yet.', 'image-watermark' );
+			}
+			return $this->item( 'drift_suspected', self::STATUS_WARNING, $label, $value, $repair );
+		}
+
+		switch ( $status['status'] ) {
+			case 'trusted':
+				return $this->item( 'manifest_trusted', self::STATUS_OK, $label, __( 'Matches the last completed watermark operation.', 'image-watermark' ), __( 'No action is needed.', 'image-watermark' ) );
+			case 'settings_changed':
+				return $this->item( 'settings_changed', self::STATUS_INFO, $label, __( 'The watermark settings changed after this image was watermarked.', 'image-watermark' ), __( 'Reapply the watermark using a verified clean source to use the current settings.', 'image-watermark' ) );
+			case 'pending':
+				return $this->item( 'manifest_pending', self::STATUS_INFO, $label, __( 'The automatic watermark is waiting for the image metadata to be saved and confirmed.', 'image-watermark' ), __( 'It is confirmed automatically; if it stays pending, the next watermark action on this image resolves it.', 'image-watermark' ) );
+			case 'legacy':
+				return $this->item( 'legacy_watermarked', self::STATUS_INFO, $label, __( 'Watermarked before details of watermark operations were kept.', 'image-watermark' ), __( 'Reapply the watermark using a verified clean source to save these details.', 'image-watermark' ) );
+			case 'untrusted':
+				$messages = [
+					'manifest_missing' => __( 'The record is missing; it can be rebuilt from the recovery journal.', 'image-watermark' ),
+					'superseded'       => __( 'A later watermark operation replaced the one this record describes. Even a refused operation can make the earlier record untrusted.', 'image-watermark' ),
+					'evidence_lost'    => __( 'A watermark operation completed without a verified record.', 'image-watermark' ),
+					'handoff_unverified' => __( 'The automatic watermark could not be confirmed against the saved image metadata.', 'image-watermark' ),
+					'evidence_mismatch' => __( 'The stored record does not match its recovery evidence.', 'image-watermark' ),
+					'incomplete'       => __( 'The last watermark operation did not complete.', 'image-watermark' ),
+				];
+				$value = isset( $messages[ $status['reason'] ] ) ? $messages[ $status['reason'] ] : __( 'The record cannot be verified.', 'image-watermark' );
+				return $this->item( 'manifest_untrusted', self::STATUS_WARNING, $label, $value, __( 'Reapply or remove the watermark using a verified clean source; otherwise restore the original or re-upload it.', 'image-watermark' ) );
+		}
+
+		return null;
 	}
 
 	/**
@@ -460,14 +592,20 @@ class Image_Watermark_Diagnostics {
 			$op_msg .= ' (' . date_i18n( get_option( 'date_format' ) . ' ' . get_option( 'time_format' ), (int) $last_op['time'] ) . ')';
 		}
 		$sizes = isset( $last_op['sizes'] ) && is_array( $last_op['sizes'] ) ? $last_op['sizes'] : [];
-		/* translators: 1: Processed size count. 2: Failed size count. 3: Skipped size count. */
-		$op_msg .= sprintf( __( ' Processed: %1$d; failed: %2$d; skipped: %3$d.', 'image-watermark' ), count( isset( $sizes['processed'] ) ? $sizes['processed'] : [] ), count( isset( $sizes['failed'] ) ? $sizes['failed'] : [] ), count( isset( $sizes['skipped'] ) ? $sizes['skipped'] : [] ) );
+		if ( $sizes === [] ) {
+			$op_msg .= ' ' . __( 'Size results unavailable.', 'image-watermark' );
+		} else {
+			/* translators: 1: Processed size count. 2: Failed size count. 3: Skipped size count. */
+			$op_msg .= sprintf( __( ' Processed: %1$d; failed: %2$d; skipped: %3$d.', 'image-watermark' ), count( isset( $sizes['processed'] ) ? $sizes['processed'] : [] ), count( isset( $sizes['failed'] ) ? $sizes['failed'] : [] ), count( isset( $sizes['skipped'] ) ? $sizes['skipped'] : [] ) );
+		}
 		$operation_sizes = [];
 		$remaining_size_details = 20;
-		foreach ( [ 'processed', 'failed', 'skipped' ] as $size_status ) {
-			$values = isset( $sizes[ $size_status ] ) && is_array( $sizes[ $size_status ] ) ? $sizes[ $size_status ] : [];
-			$operation_sizes[ $size_status ] = array_slice( $values, 0, $remaining_size_details );
-			$remaining_size_details -= count( $operation_sizes[ $size_status ] );
+		if ( $sizes !== [] ) {
+			foreach ( [ 'processed', 'failed', 'skipped' ] as $size_status ) {
+				$values = isset( $sizes[ $size_status ] ) && is_array( $sizes[ $size_status ] ) ? $sizes[ $size_status ] : [];
+				$operation_sizes[ $size_status ] = array_slice( $values, 0, $remaining_size_details );
+				$remaining_size_details -= count( $operation_sizes[ $size_status ] );
+			}
 		}
 
 		$item = $this->item(
@@ -826,6 +964,20 @@ class Image_Watermark_Diagnostics {
 			);
 		}
 
+		if ( ! empty( $options['watermark_image']['plugin_off'] ) || ! empty( $options['watermark_image']['frontend_active'] ) ) {
+			$unselected = array_diff( array_keys( wp_get_registered_image_subsizes() ), $selected );
+			if ( $unselected ) {
+				$items[] = $this->item(
+					'sizes_not_selected',
+					self::STATUS_WARNING,
+					__( 'Unselected image sizes', 'image-watermark' ),
+					/* translators: Comma-separated registered image-size names. */
+					sprintf( __( 'Automatic watermarking does not select these registered sizes: %s.', 'image-watermark' ), implode( ', ', $unselected ) ),
+					__( 'Select these sizes in Watermark settings if new uploads should include them.', 'image-watermark' )
+				);
+			}
+		}
+
 		return $items;
 	}
 
@@ -911,9 +1063,13 @@ class Image_Watermark_Diagnostics {
 	 * @param bool   $is_watermarked Attachment-level watermark state.
 	 * @param bool   $backup_exists  Valid backup for the attached full file.
 	 * @param int    $attachment_id  Attachment ID.
+	 * @param array|null $geometry    Oriented clean source dimensions, if known.
+	 * @param bool|null  $backup_usable Backup that reapply can use (also matching the
+	 *                                  attached file's dimensions and format); null
+	 *                                  means $backup_exists.
 	 * @return array
 	 */
-	private function build_attachment_file_inventory( $data, $source_file, $upload_dir, $selected_sizes, $is_watermarked, $backup_exists, $attachment_id ) {
+	private function build_attachment_file_inventory( $data, $source_file, $upload_dir, $selected_sizes, $is_watermarked, $backup_exists, $attachment_id, $geometry, $backup_usable = null ) {
 		$relative_file = isset( $data['file'] ) && is_string( $data['file'] ) ? $data['file'] : '';
 		$base_dir      = isset( $upload_dir['basedir'] ) ? $upload_dir['basedir'] : '';
 		$base_url      = isset( $upload_dir['baseurl'] ) ? $upload_dir['baseurl'] : '';
@@ -949,15 +1105,83 @@ class Image_Watermark_Diagnostics {
 		}
 
 		foreach ( isset( $data['sizes'] ) && is_array( $data['sizes'] ) ? $data['sizes'] : [] as $name => $size ) {
-			if ( empty( $size['file'] ) || ! is_string( $size['file'] ) ) {
+			if ( ! is_array( $size ) || empty( $size['file'] ) || ! is_string( $size['file'] ) || $size['file'] !== wp_basename( $size['file'] ) ) {
 				continue;
 			}
 			$size_relative = ( $relative_dir && $relative_dir !== '.' ? $relative_dir . '/' : '' ) . $size['file'];
 			$size_path     = $base_dir . DIRECTORY_SEPARATOR . str_replace( '/', DIRECTORY_SEPARATOR, $size_relative );
 			$selected      = in_array( $name, $selected_sizes, true );
-			$inventory['sizes'][ sanitize_key( $name ) ] = $entry( $size_path, $size_relative, $selected, false, $restored && $selected );
+			$inventory['sizes'][ $name ] = $entry( $size_path, $size_relative, $selected, false, $restored && $selected );
 		}
 
+		$registered = wp_get_registered_image_subsizes();
+		$manifest_status = $this->plugin->get_upload_handler()->describe_manifest_status( $attachment_id );
+		$manifest = in_array( $manifest_status['status'], [ 'trusted', 'settings_changed' ], true ) ? $manifest_status['manifest'] : null;
+		$recorded_names = [];
+		$legacy_paths = [];
+		if ( is_array( $manifest ) ) {
+			foreach ( $manifest['aliases'] as $alias ) { $recorded_names = array_merge( $recorded_names, $alias['names'] ); }
+			foreach ( $manifest['legacy'] as $legacy ) { $legacy_paths[] = $legacy['path']; }
+			$inventory['full']['watermark_record'] = $manifest['main']['watermarked'] ? 'watermarked' : 'clean';
+		} else {
+			$inventory['full']['watermark_record'] = 'unknown';
+		}
+		$aliases = [];
+		foreach ( isset( $data['sizes'] ) && is_array( $data['sizes'] ) ? $data['sizes'] : [] as $name => $size ) {
+			if ( is_array( $size ) && isset( $size['file'] ) && is_string( $size['file'] ) && $size['file'] === wp_basename( $size['file'] ) ) { $aliases[ $size['file'] ][] = (string) $name; }
+		}
+		// Reapply rebuilds sizes only from the validated clean backup of the
+		// attached file: it refuses with backup_missing without one and with
+		// backup_identity_mismatch when its dimensions or format differ.
+		if ( $backup_usable === null ) {
+			$backup_usable = $backup_exists;
+		}
+		if ( ! $is_watermarked ) {
+			$rebuild = __( 'Regenerate thumbnails if they should exist.', 'image-watermark' );
+		} elseif ( $backup_usable ) {
+			$rebuild = __( 'Apply the watermark again.', 'image-watermark' );
+		} else {
+			$rebuild = __( 'No usable clean backup is available to rebuild it; re-upload the original image if this size is needed.', 'image-watermark' );
+		}
+		foreach ( $registered as $name => $definition ) {
+			if ( ! isset( $inventory['sizes'][ $name ] ) ) {
+				$inventory['sizes'][ $name ] = $entry( false, '', in_array( $name, $selected_sizes, true ), false, false );
+			}
+			$size = isset( $data['sizes'][ $name ] ) && is_array( $data['sizes'][ $name ] ) ? $data['sizes'][ $name ] : [];
+			$dimensions = is_array( $geometry ) ? image_resize_dimensions( $geometry[0], $geometry[1], (int) $definition['width'], (int) $definition['height'], $definition['crop'] ) : null;
+			if ( $dimensions === null ) {
+				$status = 'unknown';
+				$action = __( 'Restore a readable image source before checking geometry.', 'image-watermark' );
+			} elseif ( $dimensions === false ) {
+				$status = 'not_producible';
+				$action = __( 'Use a larger source or change the registered size definition.', 'image-watermark' );
+			} elseif ( ! $inventory['sizes'][ $name ]['exists'] ) {
+				$status = 'missing';
+				$action = $rebuild;
+			} elseif ( ! isset( $size['width'], $size['height'] ) || (int) $size['width'] !== (int) $dimensions[4] || (int) $size['height'] !== (int) $dimensions[5] ) {
+				$status = 'geometry_stale';
+				$action = $rebuild;
+			} else {
+				$status = 'present';
+				$action = __( 'No action is needed.', 'image-watermark' );
+			}
+			$inventory['sizes'][ $name ]['state'] = $status;
+			$inventory['sizes'][ $name ]['action'] = $action;
+		}
+		foreach ( $inventory['sizes'] as $name => &$size ) {
+			$file = isset( $data['sizes'][ $name ]['file'] ) ? $data['sizes'][ $name ]['file'] : null;
+			$size['registered'] = array_key_exists( $name, $registered );
+			$size['shared_aliases'] = is_string( $file ) && isset( $aliases[ $file ] ) && count( $aliases[ $file ] ) > 1 ? $aliases[ $file ] : [];
+			$relative = is_string( $file ) && $file === wp_basename( $file ) ? ( $relative_dir && $relative_dir !== '.' ? $relative_dir . '/' : '' ) . $file : '';
+			$size['watermark_record'] = in_array( $name, $recorded_names, true ) ? 'watermarked' : ( in_array( $relative, $legacy_paths, true ) ? 'clean_legacy' : 'unknown' );
+			if ( ! $size['registered'] ) {
+				$metadata_entry = isset( $data['sizes'][ $name ] ) && is_array( $data['sizes'][ $name ] ) ? $data['sizes'][ $name ] : [];
+				$is_legacy = is_string( $name ) && strpos( $name, 'iw-legacy-' ) === 0 && isset( $metadata_entry['iw_legacy'] ) && $metadata_entry['iw_legacy'] === true;
+				$size['state'] = $is_legacy ? 'legacy' : 'unregistered';
+				$size['action'] = __( 'Review whether this older size is still used before removing it.', 'image-watermark' );
+			}
+		}
+		unset( $size );
 		return $inventory;
 	}
 
@@ -1003,8 +1227,16 @@ class Image_Watermark_Diagnostics {
 	 */
 	private function build_support_section() {
 		$version = isset( $this->plugin->defaults['version'] ) ? $this->plugin->defaults['version'] : '';
+		$packet = Image_Watermark_Runner::packet_limit();
 
 		return [
+			$this->item(
+				'runner_packet_limit',
+				$packet === null ? self::STATUS_INFO : ( $packet < 4194304 ? self::STATUS_WARNING : self::STATUS_OK ),
+				__( 'Bulk Processing packet limit', 'image-watermark' ),
+				$packet === null ? __( 'Not measured.', 'image-watermark' ) : sprintf( /* translators: 1: measured bytes, 2: required bytes. */ __( 'Measured: %1$s bytes; required: %2$s bytes.', 'image-watermark' ), number_format_i18n( $packet ), number_format_i18n( 4194304 ) ),
+				$packet !== null && $packet < 4194304 ? __( 'Ask your host administrator to increase the database session max_allowed_packet for Bulk Processing.', 'image-watermark' ) : ''
+			),
 			$this->item(
 				'plugin_version',
 				self::STATUS_INFO,

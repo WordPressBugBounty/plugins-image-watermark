@@ -2,7 +2,7 @@
 /*
 Plugin Name: Image Watermark
 Description: Secure and brand your images with automatic watermarks. Apply image or text overlays to new uploads and bulk process existing Media Library images with ease.
-Version: 2.0.17
+Version: 2.1.0
 Requires at least: 6.3
 Requires PHP: 7.3
 Author: dFactory
@@ -31,7 +31,7 @@ if ( ! defined( 'ABSPATH' ) )
  * Image Watermark class.
  *
  * @class Image_Watermark
- * @version	2.0.17
+ * @version	2.1.0
  */
 final class Image_Watermark {
 
@@ -108,7 +108,7 @@ final class Image_Watermark {
 				'preserve_timestamps' => false
 			]
 		],
-		'version'	 => '2.0.17'
+		'version'	 => '2.1.0'
 	];
 	public $options = [];
 
@@ -134,6 +134,9 @@ final class Image_Watermark {
 		include_once( IMAGE_WATERMARK_PATH . 'includes/class-settings-api.php' );
 		include_once( IMAGE_WATERMARK_PATH . 'includes/class-settings.php' );
 		include_once( IMAGE_WATERMARK_PATH . 'includes/class-upload-handler.php' );
+		include_once( IMAGE_WATERMARK_PATH . 'includes/class-run-store.php' );
+		include_once( IMAGE_WATERMARK_PATH . 'includes/class-runner.php' );
+		include_once( IMAGE_WATERMARK_PATH . 'includes/class-runner-controller.php' );
 		include_once( IMAGE_WATERMARK_PATH . 'includes/class-actions-controller.php' );
 		include_once( IMAGE_WATERMARK_PATH . 'includes/class-diagnostics.php' );
 
@@ -141,6 +144,7 @@ final class Image_Watermark {
 
 		$this->upload_handler = new Image_Watermark_Upload_Handler( $this );
 		$this->watermark_controller = new Image_Watermark_Actions_Controller( $this, $this->upload_handler );
+		new Image_Watermark_Runner_Controller();
 		$this->diagnostics = new Image_Watermark_Diagnostics( $this );
 
 		// actions
@@ -152,6 +156,8 @@ final class Image_Watermark {
 		add_action( 'admin_init', [ $this, 'update_plugin' ] );
 		add_action( 'admin_init', [ $this, 'check_extensions' ] );
 		add_action( 'admin_init', [ $this, 'check_review_notice' ] );
+		// Core checks access to legacy menu slugs before admin_init runs.
+		add_action( 'admin_menu', [ $this, 'redirect_old_slug' ], 9 );
 		add_action( 'admin_init', [ $this, 'redirect_old_slug' ], 9 );
 		add_action( 'admin_notices', [ $this, 'bulk_admin_notices' ] );
 		add_action( 'delete_attachment', [ $this->upload_handler, 'delete_attachment' ] );
@@ -165,8 +171,9 @@ final class Image_Watermark {
 		// filters
 		add_filter( 'plugin_action_links_' . IMAGE_WATERMARK_BASENAME, [ $this, 'plugin_settings_link' ] );
 		add_filter( 'plugin_row_meta', [ $this, 'plugin_extend_links' ], 10, 2 );
-		add_filter( 'wp_handle_upload', [ $this, 'handle_upload_files' ] );
+		add_filter( 'wp_handle_upload', [ $this, 'handle_upload_files' ], 10, 2 );
 		add_filter( 'attachment_fields_to_edit', [ $this, 'attachment_fields_to_edit' ], 10, 2 );
+		add_filter( 'wp_prepare_attachment_for_js', [ $this, 'prepare_attachment_last_result' ], 10, 2 );
 
 		// define our backup location
 		$upload_dir = wp_upload_dir();
@@ -407,11 +414,435 @@ final class Image_Watermark {
 				// the selected attachment's existing backup with is_valid_backup_file().
 				'removeWatermarkAvailable' => true,
 				'applyWatermark'	=> __( 'Apply watermark', 'image-watermark' ),
-				'removeWatermark'	=> __( 'Remove watermark', 'image-watermark' )
+				'removeWatermark'	=> __( 'Remove watermark', 'image-watermark' ),
+				'handoffOffer' => __( 'Process the full selection in Bulk Processing? Cancel processes only the first 20 items.', 'image-watermark' ),
+				'handoffFailed' => __( 'Could not open Bulk Processing. No images were submitted; try again.', 'image-watermark' ),
+				'handoffTooLarge' => __( 'The selection exceeds the 2,000-item limit. No images were submitted; use Bulk Processing filters or select at most 2,000 images.', 'image-watermark' ),
+				/* translators: Number of selected images not submitted. */
+				'bulkRemaining' => __( '%s selected images were not submitted (20 item limit).', 'image-watermark' ),
 			];
+			if ( current_user_can( 'manage_options' ) ) {
+				$media_script_data['runnerNonce'] = wp_create_nonce( 'iw_runner' );
+				$media_script_data['runnerUrl'] = admin_url( 'admin-ajax.php' );
+			}
 		}
 
 		if ( $page === 'settings_page_image-watermark' ) {
+			if ( isset( $_GET['tab'] ) && is_string( $_GET['tab'] ) && sanitize_key( wp_unslash( $_GET['tab'] ) ) === 'bulk' ) {
+				wp_enqueue_style( 'watermark-admin' );
+				wp_enqueue_script( 'iw-admin-runner', IMAGE_WATERMARK_URL . '/js/admin-runner.js', [ 'wp-date', 'wp-i18n' ], $this->defaults['version'], true );
+				wp_set_script_translations( 'iw-admin-runner', 'image-watermark', IMAGE_WATERMARK_PATH . '/languages' );
+				// One helper decides the token, the source controller and the
+				// server-rendered Operation value so they cannot disagree.
+				$handoff = Image_Watermark_Runner::available_handoff();
+				$handoff_valid = ! empty( $handoff );
+				$bulk_settings = $this->settings->get_settings_data();
+				$count_profile = $this->settings->count_format_profile();
+				$max_ids = $this->settings->format_count( 2000, $count_profile );
+				$ownership_limit = $this->settings->format_count( 50001, $count_profile );
+				wp_localize_script( 'iw-admin-runner', 'iwArgsRunner', [
+					'countFormat' => $count_profile,
+					'handoff' => $handoff_valid ? $handoff['token'] : '',
+					'handoffInvalid' => isset( $_GET['iw_handoff'] ) && ! $handoff_valid,
+					'url' => admin_url( 'admin-ajax.php' ),
+					'attachmentEditUrl' => admin_url( 'post.php' ),
+					'nonce' => wp_create_nonce( 'iw_runner' ),
+					'strings' => [
+						'successCodes' => [ 'watermarked', 'watermarkremoved', 'regenerated', 'attachment_file_reconciled', 'preview', 'scanned' ],
+						'imageDescriptions' => $bulk_settings['bulk']['fields']['images']['choice_descriptions'],
+						'codeMessages' => [
+							'already_watermarked' => __( 'The image is already watermarked.', 'image-watermark' ),
+							'attachment_file_diverged' => __( 'The attachment file differs from its metadata.', 'image-watermark' ),
+							'attachment_file_reconciled' => __( 'The attachment file was reconciled.', 'image-watermark' ),
+							'attachment_unattached' => __( 'The attachment is not attached to a post.', 'image-watermark' ),
+							'automatic_disabled' => __( 'Automatic watermarking is disabled.', 'image-watermark' ),
+							'backup_failed' => __( 'The backup could not be created.', 'image-watermark' ),
+							'backup_identity_mismatch' => __( 'The backup does not match the image.', 'image-watermark' ),
+							'backup_metadata_commit_failed' => __( 'The backup information could not be saved.', 'image-watermark' ),
+							'backup_missing' => __( 'A valid backup is missing.', 'image-watermark' ),
+							'backup_path_unavailable' => __( 'The backup location is unavailable.', 'image-watermark' ),
+							'busy' => __( 'The image is being processed by another request.', 'image-watermark' ),
+							'client_side_claim_expired' => __( 'The upload processing request expired.', 'image-watermark' ),
+							'client_side_claim_mismatch' => __( 'The upload no longer matches its processing request.', 'image-watermark' ),
+							'client_side_finalize_deferred' => __( 'Upload finalization is waiting for another operation.', 'image-watermark' ),
+							'client_side_finalize_withheld' => __( 'Upload finalization was withheld to protect the image.', 'image-watermark' ),
+							'client_side_upload_pending' => __( 'The upload has not finished processing.', 'image-watermark' ),
+							'client_side_upload_unfinalized' => __( 'The upload has not been finalized.', 'image-watermark' ),
+							'completion_fence_lost' => __( 'Ownership was lost before completion could be confirmed.', 'image-watermark' ),
+							'derivative_reconciliation_failed' => __( 'Some image sizes could not be reconciled.', 'image-watermark' ),
+							'directory_changed' => __( 'The image directory changed during processing.', 'image-watermark' ),
+							'display_veto' => __( 'Another plugin prevented this operation.', 'image-watermark' ),
+							'failed_after_mutation' => __( 'Processing failed after an image file changed.', 'image-watermark' ),
+							'file_missing' => __( 'The image file is missing.', 'image-watermark' ),
+							'handoff_pending' => __( 'The upload is still waiting for confirmation.', 'image-watermark' ),
+							'handoff_unverified' => __( 'The upload could not be confirmed.', 'image-watermark' ),
+							'image_unreadable' => __( 'The image could not be read.', 'image-watermark' ),
+							'interrupted' => __( 'Processing was interrupted.', 'image-watermark' ),
+							'invalid_backup_path' => __( 'The backup location is invalid.', 'image-watermark' ),
+							'invalid_custom_dimensions' => __( 'The custom watermark dimensions are invalid.', 'image-watermark' ),
+							'invalid_metadata' => __( 'The image information is invalid.', 'image-watermark' ),
+							'invalid_request' => __( 'The operation request is invalid.', 'image-watermark' ),
+							'invalid_sizes' => __( 'The selected image sizes are invalid.', 'image-watermark' ),
+							'invalid_source_path' => __( 'The source location is invalid.', 'image-watermark' ),
+							'invalid_targets' => __( 'The image targets are invalid.', 'image-watermark' ),
+							'is_watermark_source' => __( 'This image is the selected watermark.', 'image-watermark' ),
+							'iw_run_active_exists' => __( 'Another run is still active.', 'image-watermark' ),
+							'iw_run_active_malformed' => __( 'The active run cannot be read.', 'image-watermark' ),
+							'iw_run_attempt_not_claimed' => __( 'This item is no longer claimed by the run.', 'image-watermark' ),
+							'iw_run_attempts_exhausted' => __( 'The run has reached its attempt limit.', 'image-watermark' ),
+							'iw_run_fence_stale' => __( 'Ownership of the run was lost.', 'image-watermark' ),
+							'iw_run_handoff_mismatch' => __( 'The selected operation does not match the selection.', 'image-watermark' ),
+							'iw_run_handoff_missing' => __( 'The selection has expired or is unavailable.', 'image-watermark' ),
+							'iw_run_history_malformed' => __( 'The run history cannot be read.', 'image-watermark' ),
+							'iw_run_invalid_input' => __( 'The run request is invalid.', 'image-watermark' ),
+							'iw_run_item_forbidden' => __( 'You do not have permission to process this image.', 'image-watermark' ),
+							'iw_run_not_found' => __( 'The requested run could not be found.', 'image-watermark' ),
+							'iw_run_packet_too_small' => __( 'The database packet limit is too small for Bulk Processing.', 'image-watermark' ),
+							'iw_run_state_conflict' => __( 'The run changed while the request was being processed.', 'image-watermark' ),
+							'iw_run_storage_failed' => __( 'The run state could not be saved or read.', 'image-watermark' ),
+							'iw_run_summary_unconfirmed' => __( 'The item result is not yet confirmed.', 'image-watermark' ),
+							'iw_run_takeover_too_early' => __( 'Another administrator owns this run.', 'image-watermark' ),
+							/* translators: %1$s: formatted maximum selected IDs. */
+							'iw_run_target_too_large' => sprintf( __( 'The selection exceeds the %1$s-item limit.', 'image-watermark' ), $max_ids ),
+							'iw_run_unclassified_outcome' => __( 'The item outcome could not be classified.', 'image-watermark' ),
+							'iw_runner_bad_nonce' => __( 'The request has expired.', 'image-watermark' ),
+							'iw_runner_forbidden' => __( 'You do not have permission to manage runs.', 'image-watermark' ),
+							'journal_budget_exceeded' => __( 'There is not enough space to record this operation safely.', 'image-watermark' ),
+							'journal_invalid' => __( 'The previous operation information is invalid.', 'image-watermark' ),
+							'journal_write_failed' => __( 'The operation information could not be saved.', 'image-watermark' ),
+							'legacy_limit_reached' => __( 'The image has too many retained sizes.', 'image-watermark' ),
+							'main_identity_changed' => __( 'The main image changed during processing.', 'image-watermark' ),
+							'manifest_budget_exceeded' => __( 'There are too many selected sizes to record safely.', 'image-watermark' ),
+							'manifest_unverified' => __( 'The processed image could not be verified.', 'image-watermark' ),
+							'manual_disabled' => __( 'Manual watermarking is disabled.', 'image-watermark' ),
+							'metadata_commit_failed' => __( 'The image information could not be saved.', 'image-watermark' ),
+							'metadata_commit_interrupted' => __( 'Saving image information was interrupted.', 'image-watermark' ),
+							'metadata_fence_lost' => __( 'Ownership was lost before image information was saved.', 'image-watermark' ),
+							'metadata_read_failed' => __( 'Image information could not be read.', 'image-watermark' ),
+							'lease_read_error' => __( 'The operation lock could not be read.', 'image-watermark' ),
+							'metadata_regeneration_failed' => __( 'Image information could not be regenerated.', 'image-watermark' ),
+							'metadata_write_failed' => __( 'Image information could not be written.', 'image-watermark' ),
+							'no_clean_source' => __( 'No proven clean source is available.', 'image-watermark' ),
+							'no_engine' => __( 'No supported image processing engine is available.', 'image-watermark' ),
+							'no_longer_matches' => __( 'The image no longer matches the selection.', 'image-watermark' ),
+							'no_target_sizes' => __( 'No selected image sizes are available for this attachment.', 'image-watermark' ),
+							'no_selected_sizes' => __( 'No image sizes are selected.', 'image-watermark' ),
+							'no_targets' => __( 'No image targets could be processed.', 'image-watermark' ),
+							'other' => __( 'Other problems occurred.', 'image-watermark' ),
+							'ownership_ceiling_exceeded' => __( 'The library is too large to verify file ownership safely.', 'image-watermark' ),
+							'ownership_uncertain' => __( 'File ownership could not be verified.', 'image-watermark' ),
+							'post_type_excluded' => __( 'The image is excluded by its post type.', 'image-watermark' ),
+							'predecessor_map_stale' => __( 'The previous operation information is out of date.', 'image-watermark' ),
+							'predecessor_uncertain' => __( 'The previous operation could not be safely reconciled.', 'image-watermark' ),
+							'preview' => __( 'The preview was prepared.', 'image-watermark' ),
+							'promotion_failed' => __( 'A prepared image could not be installed.', 'image-watermark' ),
+							'recovery_interrupted' => __( 'Recovery was interrupted.', 'image-watermark' ),
+							'recovery_source_invalid' => __( 'The recovery source is invalid.', 'image-watermark' ),
+							'recovery_source_missing' => __( 'The recovery source is missing.', 'image-watermark' ),
+							'regenerate_mode_unsupported' => __( 'This regeneration mode is not supported.', 'image-watermark' ),
+							'regenerate_unsupported' => __( 'This image cannot be regenerated.', 'image-watermark' ),
+							'regenerated' => __( 'Image sizes were regenerated.', 'image-watermark' ),
+							'remap_conflict' => __( 'Image sizes conflict at their target location.', 'image-watermark' ),
+							'remap_source_missing' => __( 'A source for an image size is missing.', 'image-watermark' ),
+							'restore_failed' => __( 'The image could not be restored.', 'image-watermark' ),
+							'retained_shared' => __( 'A shared image file was retained.', 'image-watermark' ),
+							'rotation_failed' => __( 'The watermark could not be rotated.', 'image-watermark' ),
+							'rotation_unavailable' => __( 'Watermark rotation is unavailable.', 'image-watermark' ),
+							'scan_counter_overflow' => __( 'The scan cannot count more results safely.', 'image-watermark' ),
+							'scan_incomplete' => __( 'The scan could not finish measuring this image.', 'image-watermark' ),
+							'scan_unmeasurable' => __( 'The requested scan information cannot be measured.', 'image-watermark' ),
+							'settings_changed' => __( 'Settings changed during the run.', 'image-watermark' ),
+							'scan_settings_changed' => __( 'Settings changed during the scan. Stop it and start a new scan.', 'image-watermark' ),
+							'shared_alias_conflict' => __( 'Shared image sizes have conflicting targets.', 'image-watermark' ),
+							'size_generation_failed' => __( 'An image size could not be generated.', 'image-watermark' ),
+							'size_not_producible' => __( 'An image size cannot be generated from the source.', 'image-watermark' ),
+							'small_image' => __( 'The image is smaller than the configured minimum dimensions for watermarking.', 'image-watermark' ),
+							'source_path_unavailable' => __( 'The image source location is unavailable.', 'image-watermark' ),
+							'summary_malformed' => __( 'The image\'s last operation record is invalid or duplicated.', 'image-watermark' ),
+							'summary_unconfirmed' => __( 'The item result is unconfirmed.', 'image-watermark' ),
+							'time_budget_exhausted' => __( 'The operation ran out of time.', 'image-watermark' ),
+							'unclassified_outcome' => __( 'The item outcome could not be classified.', 'image-watermark' ),
+							'unsupported_mime' => __( 'The image file type is not supported.', 'image-watermark' ),
+							'unsupported_type' => __( 'This image type is not supported.', 'image-watermark' ),
+							'upload_path_unresolved' => __( 'The uploaded image location could not be resolved.', 'image-watermark' ),
+							'upload_type_changed_unsupported' => __( 'The uploaded image changed to an unsupported type.', 'image-watermark' ),
+							'validation_failed' => __( 'The operation could not be validated.', 'image-watermark' ),
+							'watermark_font_missing' => __( 'The selected watermark font is missing.', 'image-watermark' ),
+							'watermark_source_missing' => __( 'The watermark image is missing.', 'image-watermark' ),
+							'watermark_text_empty' => __( 'The watermark text is empty.', 'image-watermark' ),
+							'watermark_type_unsupported' => __( 'The selected watermark type is not supported.', 'image-watermark' ),
+							'watermarked' => __( 'The watermark was applied.', 'image-watermark' ),
+							'watermarkremoved' => __( 'The watermark was removed.', 'image-watermark' ),
+							'write_failed' => __( 'The image could not be written.', 'image-watermark' ),
+							'scanned' => __( 'The image was scanned.', 'image-watermark' ),
+							'attachment_not_found' => __( 'The attachment could not be found.', 'image-watermark' ),
+							'scan_not_applicable' => __( 'The image cannot be scanned.', 'image-watermark' ),
+							'scan_forbidden' => __( 'You do not have permission to scan this image.', 'image-watermark' ),
+							'scan_concurrent_change' => __( 'The image changed while it was being scanned.', 'image-watermark' ),
+							'scan_interrupted' => __( 'The scan was interrupted.', 'image-watermark' ),
+							'network' => __( 'The server could not be reached.', 'image-watermark' ),
+							'timeout' => __( 'The request timed out.', 'image-watermark' ),
+							'request_failed' => __( 'The request failed.', 'image-watermark' ),
+							'invalid_json' => __( 'The server response could not be read.', 'image-watermark' ),
+						],
+						'codeHints' => [
+							/* translators: %1$s: formatted ownership threshold. */
+							'ownership_ceiling_exceeded' => sprintf( __( 'Stop or review the library; resume only after it has fewer than %1$s attachments.', 'image-watermark' ), $ownership_limit ),
+							'no_engine' => __( 'Ask your host to enable GD or Imagick, then resume.', 'image-watermark' ),
+							'manual_disabled' => __( 'Enable manual watermarking in settings before continuing.', 'image-watermark' ),
+							'settings_changed' => __( 'Review the settings and choose whether to continue with them.', 'image-watermark' ),
+							'iw_run_packet_too_small' => __( 'Ask your host administrator to raise the database packet limit to at least 4 MB.', 'image-watermark' ),
+							/* translators: %1$s: formatted maximum selected IDs. */
+							'iw_run_target_too_large' => sprintf( __( 'Use filters in Bulk Processing, or select at most %1$s images.', 'image-watermark' ), $max_ids ),
+							'iw_run_state_conflict' => __( 'Refresh status before continuing; do not resend an item.', 'image-watermark' ),
+							'iw_run_storage_failed' => __( 'Refresh status before continuing; the item may already have run.', 'image-watermark' ),
+							'backup_missing' => __( 'Restore a valid backup before removing the watermark.', 'image-watermark' ),
+							'validation_failed' => __( 'Review the watermark settings before continuing.', 'image-watermark' ),
+							'scan_incomplete' => __( 'Try again when the server has enough time to scan.', 'image-watermark' ),
+							'scan_unmeasurable' => __( 'Review the image and scan filters before continuing.', 'image-watermark' ),
+							'iw_run_attempts_exhausted' => __( 'Review the results and start a new run.', 'image-watermark' ),
+							'unclassified_outcome' => __( 'Refresh status and inspect the image; do not resend the item.', 'image-watermark' ),
+							'summary_malformed' => __( 'Inspect the image\'s operation record before trying again.', 'image-watermark' ),
+							'summary_unconfirmed' => __( 'Refresh status and inspect the image; do not resend the item.', 'image-watermark' ),
+							'iw_run_fence_stale' => __( 'Use Resume, Pause or Stop when available; do not resend the item.', 'image-watermark' ),
+							'iw_run_takeover_too_early' => __( 'You can take control after more than 60 seconds without contact from the other tab.', 'image-watermark' ),
+							'iw_run_item_forbidden' => __( 'Restore access or ask an authorized administrator.', 'image-watermark' ),
+							'iw_run_summary_unconfirmed' => __( 'Wait for settlement; do not resend the item.', 'image-watermark' ),
+							'iw_run_unclassified_outcome' => __( 'Wait for settlement and inspect the image.', 'image-watermark' ),
+							'busy' => __( 'Wait for the other operation to finish, then retry.', 'image-watermark' ),
+							'no_target_sizes' => __( 'Review the selected watermark sizes and this image.', 'image-watermark' ),
+							'no_selected_sizes' => __( 'Select at least one image size in the watermark settings.', 'image-watermark' ),
+							'is_watermark_source' => __( 'Skipped because this image is used as your watermark. No action is needed.', 'image-watermark' ),
+							'invalid_custom_dimensions' => __( 'Correct the custom dimensions in the watermark settings.', 'image-watermark' ),
+							'watermark_source_missing' => __( 'Select an available watermark image in the settings.', 'image-watermark' ),
+							'watermark_font_missing' => __( 'Select an available font in the watermark settings.', 'image-watermark' ),
+							'watermark_text_empty' => __( 'Enter watermark text in the settings.', 'image-watermark' ),
+							'rotation_unavailable' => __( 'Ask your host to enable image rotation, or remove the rotation setting.', 'image-watermark' ),
+							'backup_failed' => __( 'Check backup storage space and permissions before retrying.', 'image-watermark' ),
+							'backup_path_unavailable' => __( 'Check the backup location and its permissions before retrying.', 'image-watermark' ),
+							'backup_identity_mismatch' => __( 'Inspect the backup and image before trying again.', 'image-watermark' ),
+							'no_clean_source' => __( 'Restore a proven clean source before trying again.', 'image-watermark' ),
+							'file_missing' => __( 'Restore the image file or upload the image again.', 'image-watermark' ),
+							'image_unreadable' => __( 'Check the image file and its permissions.', 'image-watermark' ),
+							'write_failed' => __( 'Check storage space and image file permissions before retrying.', 'image-watermark' ),
+							'small_image' => __( 'Review the minimum dimensions or use a larger image.', 'image-watermark' ),
+							'client_side_upload_unfinalized' => __( 'Complete the upload or upload the image again.', 'image-watermark' ),
+							'client_side_finalize_deferred' => __( 'Complete the deferred upload before processing this image.', 'image-watermark' ),
+							'iw_runner_bad_nonce' => __( 'Reload the page and try again.', 'image-watermark' ),
+							'iw_runner_forbidden' => __( 'Ask an administrator with permission to manage runs.', 'image-watermark' ),
+							'iw_run_active_exists' => __( 'Finish or stop the active run first.', 'image-watermark' ),
+							'iw_run_handoff_missing' => __( 'Select the images again.', 'image-watermark' ),
+							'iw_run_handoff_mismatch' => __( 'Select the images and operation again.', 'image-watermark' ),
+						],
+						'unknownCode' => __( 'An unexpected problem occurred.', 'image-watermark' ),
+						'statusLabels' => [ 'running' => __( 'Running', 'image-watermark' ), 'paused' => __( 'Paused', 'image-watermark' ), 'stopped' => __( 'Stopped', 'image-watermark' ), 'complete' => __( 'Complete', 'image-watermark' ) ],
+						/* translators: 1: Number of matching images. */
+						'estimateMatching' => __( 'Matching images: %1$s.', 'image-watermark' ),
+						/* translators: 1: Number observed so far. */
+						'estimateObservedCount' => __( 'Matching images observed so far: %1$s.', 'image-watermark' ),
+						'estimateMembershipUnavailable' => __( 'Matching images: not measured.', 'image-watermark' ),
+						/* translators: 1: Number of selected images. */
+						'estimateSelected' => __( 'Selected images: %1$s.', 'image-watermark' ),
+						/* translators: 1: Expected skips found by the check. */
+						'estimateSkipped' => __( 'Will be skipped: %1$s', 'image-watermark' ),
+						/* translators: 1: Issues found by the check. */
+						'estimateAttention' => __( 'Needs attention: %1$s', 'image-watermark' ),
+						'estimateNone' => __( 'None found in this check.', 'image-watermark' ),
+						'estimateNotChecked' => __( 'Not fully checked.', 'image-watermark' ),
+						/* translators: 1: Number of selected watermark images. */
+						'estimateWatermarkSkipped' => __( 'Selected watermark image: %1$s (kept unchanged; no action needed).', 'image-watermark' ),
+						'estimateTitle' => __( 'Estimated result', 'image-watermark' ),
+						'gateLabels' => [
+							'manual_disabled' => __( 'Enable manual watermarking in Watermark settings before starting.', 'image-watermark' ),
+							'no_engine' => __( 'No image processing engine is available. Ask your host to enable GD or Imagick.', 'image-watermark' ),
+							'invalid_metadata' => __( 'Image information is unreadable', 'image-watermark' ),
+							'rotation_unavailable' => __( 'Watermark rotation is unavailable', 'image-watermark' ),
+							'invalid_custom_dimensions' => __( 'Custom watermark dimensions are invalid', 'image-watermark' ),
+							'watermark_text_empty' => __( 'Watermark text is empty', 'image-watermark' ),
+							'no_selected_sizes' => __( 'No image sizes are selected', 'image-watermark' ),
+							'display_veto' => __( 'Another plugin prevents the operation', 'image-watermark' ),
+							'client_side_finalize_deferred' => __( 'Upload finalization is deferred', 'image-watermark' ),
+						],
+						/* translators: 1: What prevents a complete estimate. */
+						'estimateBlocker' => __( 'Check incomplete: %1$s.', 'image-watermark' ),
+						'estimatePartial' => __( 'Partial estimate: counts do not cover the whole selection.', 'image-watermark' ),
+						'estimateUnmeasured' => __( 'These counts are a guide. Further file and backup checks run during processing.', 'image-watermark' ),
+						'previewLabels' => [
+							'no_longer_matches' => __( 'Images that no longer match the selection', 'image-watermark' ),
+							'watermarked_reapply' => __( 'Already watermarked', 'image-watermark' ),
+							'watermarked_remove' => __( 'Watermarked images', 'image-watermark' ),
+							'legacy' => __( 'Legacy watermarked', 'image-watermark' ),
+						],
+						'warningApply' => __( 'Applies your current watermark settings. For images already watermarked, it restores the clean backup first, then applies the watermark.', 'image-watermark' ),
+						'warningRemove' => __( 'Remove requires a valid backup.', 'image-watermark' ),
+						'scopeAll' => __( 'All images', 'image-watermark' ),
+						'scopeFiltered' => __( 'Filtered images', 'image-watermark' ),
+						'scopeOtherFilters' => __( 'Additional saved filters apply', 'image-watermark' ),
+						'scopeSelected' => __( 'Selected images', 'image-watermark' ),
+						/* translators: %1$s: original operation; %2$s: original run start time. */
+						'retryOf' => __( 'Retry of %1$s started %2$s', 'image-watermark' ),
+						'retryOriginUnavailable' => __( 'Retry of an earlier run whose details are no longer available.', 'image-watermark' ),
+						/* translators: %1$s: processed; %2$s: selected total; %3$s: percentage. */
+						'progressSelected' => __( '%1$s of %2$s (%3$s%%)', 'image-watermark' ),
+						/* translators: %1$s: processed; %2$s: estimated total; %3$s: percentage. */
+						'progressApproximate' => __( '%1$s of about %2$s (%3$s%%)', 'image-watermark' ),
+						'progressBarLabel' => __( 'Run progress', 'image-watermark' ),
+						'activityStatuses' => [ 'processing' => __( 'Processing', 'image-watermark' ), 'done' => __( 'Done', 'image-watermark' ), 'partial' => __( 'Partial', 'image-watermark' ), 'skipped' => __( 'Skipped', 'image-watermark' ), 'failed' => __( 'Failed', 'image-watermark' ), 'unconfirmed' => __( 'Result unconfirmed', 'image-watermark' ) ],
+						'activityUnconfirmed' => __( 'The result could not be confirmed. Counters are authoritative.', 'image-watermark' ),
+						/* translators: 1: Seconds elapsed. */
+						'activityTime' => __( '%1$s s', 'image-watermark' ),
+						'opensInNewTab' => __( '(opens in a new tab)', 'image-watermark' ),
+						/* translators: 1: Approximate remaining seconds, based on this run's observed processing speed. */
+						'remainingSeconds' => __( 'About %1$s s remaining at the current processing speed.', 'image-watermark' ),
+						/* translators: 1: Approximate remaining minutes, based on this run's observed processing speed. */
+						'remainingMinutes' => __( 'About %1$s min remaining at the current processing speed.', 'image-watermark' ),
+						/* translators: 1: Attachment ID. */
+						'activityFileFallback' => __( 'Attachment %1$s', 'image-watermark' ),
+						'activityCompletePercent' => __( '100%', 'image-watermark' ),
+						'previousPage' => __( 'Previous', 'image-watermark' ),
+						'nextPage' => __( 'Next', 'image-watermark' ),
+						/* translators: %1$s: current page; %2$s: total pages. */
+						'problemPage' => __( 'Problem page %1$s of %2$s', 'image-watermark' ),
+						'recentDescription' => __( 'Last 10 finished runs, newest first.', 'image-watermark' ),
+						'recentDetails' => __( 'Details', 'image-watermark' ),
+						'recentLoading' => __( 'Loading...', 'image-watermark' ),
+						'noRunsYet' => __( 'No runs yet.', 'image-watermark' ),
+						'activityHeading' => __( 'Activity', 'image-watermark' ),
+						'activityDescription' => __( 'Last 20 images processed, newest first.', 'image-watermark' ),
+						'findingsHeading' => __( 'Scan findings', 'image-watermark' ),
+						'problemsHeading' => __( 'Problems', 'image-watermark' ),
+						'operationDescriptions' => [
+							'apply' => __( 'Applies your current watermark settings. For images already watermarked, it restores the clean backup first, then applies the watermark.', 'image-watermark' ),
+							'remove' => __( 'Removes the watermark and restores each image from its backup.', 'image-watermark' ),
+							'scan' => __( 'Checks image sizes, backups and processing problems. No images are changed.', 'image-watermark' ),
+						],
+						'filterLabels' => [
+							'dateFrom' => __( 'Uploaded from (site date)', 'image-watermark' ),
+							'dateTo' => __( 'Uploaded through (site date)', 'image-watermark' ),
+							'mime' => __( 'Image type', 'image-watermark' ),
+							'watermarked' => __( 'Watermarked state', 'image-watermark' ),
+							'any' => __( 'Any', 'image-watermark' ),
+							'yes' => __( 'Watermarked', 'image-watermark' ),
+							'no' => __( 'Not watermarked', 'image-watermark' ),
+						],
+						/* translators: %1$s: formatted maximum selected IDs. */
+						'invalidIds' => sprintf( __( 'Enter 1 to %1$s valid attachment IDs.', 'image-watermark' ), $max_ids ),
+						'invalidDateRange' => __( 'The start date must not be after the end date.', 'image-watermark' ),
+						'confirmAll' => __( 'I confirm this operation targets all images.', 'image-watermark' ),
+						'clearMalformed' => __( 'Clear unreadable run', 'image-watermark' ),
+						'clearMalformedExplanation' => __( 'Clearing this run discards its counters, problems and claim. Attachments are untouched.', 'image-watermark' ),
+						'scanHeader' => __( 'Quick check', 'image-watermark' ),
+						'scanFull' => __( 'Full check', 'image-watermark' ),
+						'scanNothingFound' => __( 'No problems were found in the categories this check measured.', 'image-watermark' ),
+						/* translators: 1: Categories the check did not measure. */
+						'scanNotMeasured' => __( 'Not measured by this check: %1$s.', 'image-watermark' ),
+						/* translators: 1: A size in bytes. */
+						'sizeBytes' => __( '%1$s B', 'image-watermark' ),
+						/* translators: 1: A size in kilobytes. */
+						'sizeKilobytes' => __( '%1$s KB', 'image-watermark' ),
+						/* translators: 1: A size in megabytes. */
+						'sizeMegabytes' => __( '%1$s MB', 'image-watermark' ),
+						/* translators: 1: A size in gigabytes. */
+						'sizeGigabytes' => __( '%1$s GB', 'image-watermark' ),
+						/* translators: 1: Scope of the target. */
+						'estimateButton' => __( 'Estimate only', 'image-watermark' ),
+						'start' => __( 'Start processing', 'image-watermark' ),
+						'pause' => __( 'Pause', 'image-watermark' ),
+						'resume' => __( 'Resume', 'image-watermark' ),
+						'continueSettings' => __( 'Continue with new settings', 'image-watermark' ),
+						'stop' => __( 'Stop', 'image-watermark' ),
+						'retry' => __( 'Retry them', 'image-watermark' ),
+						'refresh' => __( 'Refresh', 'image-watermark' ),
+						'controlsDescription' => __( 'Pause waits after the current image finishes. Resume continues with the remaining images. Stop ends the run; images already processed keep their changes.', 'image-watermark' ),
+						'controlsTransfer' => __( 'Resuming here takes control from the previous tab, which may have been closed or reloaded.', 'image-watermark' ),
+						'controlsUnresolved' => __( 'Resume is unavailable while the current image\'s result is being confirmed.', 'image-watermark' ),
+						'controlsRefresh' => __( 'Refresh retries reading the run status; it does not resume processing.', 'image-watermark' ),
+						'controlsKeepOpen' => __( 'Keep this page open while processing.', 'image-watermark' ),
+						'checking' => __( 'Checking status...', 'image-watermark' ),
+						'handoffReceived' => __( 'Selection received. Estimate before starting.', 'image-watermark' ),
+						'handoffInvalid' => __( 'The selection handoff is invalid or expired. Select images again.', 'image-watermark' ),
+						'unknown' => __( 'unknown', 'image-watermark' ),
+						/* translators: 1: Run status. 2: Optional pause reason. 3: Additional status notices. */
+						'status' => __( 'Status: %1$s%2$s%3$s', 'image-watermark' ),
+						'unresolved' => __( ' - item unresolved; waiting for settlement, with no guaranteed deadline.', 'image-watermark' ),
+						'summaryUnconfirmed' => __( ' - one item is unknown, not counted as successful.', 'image-watermark' ),
+						'uncertain' => __( ' - response uncertain; execute was not resent.', 'image-watermark' ),
+						'noActiveRun' => __( 'No active run.', 'image-watermark' ),
+						/* translators: 1: Seconds without contact. 2: Name of the administrator who started the run. */
+						'noticeStale' => __( 'No contact for %1$s seconds. Started by %2$s.', 'image-watermark' ),
+						/* translators: 1: Name of the administrator who started the run. 2: Seconds since the last contact. */
+						'noticeOther' => __( 'Started by %1$s; last contact %2$s seconds ago.', 'image-watermark' ),
+						'noticeOwner' => __( 'Another tab may still be processing this run.', 'image-watermark' ),
+						'noticePaused' => __( 'This run is paused.', 'image-watermark' ),
+						/* translators: 1: Seconds until control becomes available. */
+						'noticeAvailableIn' => __( 'You can take control if there is no further contact for %1$s seconds.', 'image-watermark' ),
+						/* translators: Earliest possible eligibility time, not a deadline. */
+						'earliestEligibility' => __( ' Earliest cancellation eligibility: %1$s, conditional on successful reads. Settlement may happen earlier; release is not guaranteed.', 'image-watermark' ),
+						/* translators: 1: Scope. 2: Depth. 3: Time. 4: Completion. */
+						'scanDetails' => __( 'Scan scope: %1$s; depth: %2$s; updated: %3$s; %4$s.', 'image-watermark' ),
+						'scanComplete' => __( 'complete', 'image-watermark' ),
+						'scanIncomplete' => __( 'incomplete', 'image-watermark' ),
+						'nonRetryableFix' => __( 'Review this attachment and its settings before starting a new run.', 'image-watermark' ),
+						'errorFixes' => [
+							'iw_run_attempts_exhausted' => __( 'Attempt limit reached. Start a new run after reviewing its results.', 'image-watermark' ),
+							'iw_run_takeover_too_early' => __( 'Another administrator owns this run. You can take control after more than 60 seconds without contact from their tab.', 'image-watermark' ),
+							'iw_run_summary_unconfirmed' => __( 'The item result is unconfirmed. Wait for settlement; do not resend it.', 'image-watermark' ),
+							'iw_run_unclassified_outcome' => __( 'The item outcome cannot be classified. Wait for settlement and inspect the attachment.', 'image-watermark' ),
+							'iw_run_fence_stale' => __( 'Ownership was lost. Use Resume, Pause or Stop when available; do not resend the item.', 'image-watermark' ),
+							'iw_run_item_forbidden' => __( 'Permission to recover this attachment is missing. Restore access or ask an authorized administrator.', 'image-watermark' ),
+							'iw_run_target_too_large' => __( 'The selection is too large. Reduce it and start a new run.', 'image-watermark' ),
+						],
+						'scanLabels' => [
+							'no_validated_clean_source' => __( 'No verified clean source', 'image-watermark' ),
+							'unverified_clean_source' => __( 'Unverified clean source', 'image-watermark' ),
+							'drift_suspected' => __( 'Possible changed image files', 'image-watermark' ),
+							'drift_verified' => __( 'Changed image files confirmed', 'image-watermark' ),
+							'legacy_watermarked' => __( 'Watermarked by an earlier version', 'image-watermark' ),
+							'settings_changed' => __( 'Watermark settings changed since', 'image-watermark' ),
+							'last_operation_problem' => __( 'Last operation had a problem', 'image-watermark' ),
+							'non_terminal_journal' => __( 'Operations that did not finish', 'image-watermark' ),
+							'client_side_pending' => __( 'Uploads still being processed', 'image-watermark' ),
+							'backup_storage_bytes' => __( 'Backup storage', 'image-watermark' ),
+							'missing_sizes' => __( 'Missing image sizes', 'image-watermark' ),
+							'geometry_stale_sizes' => __( 'Image sizes with old dimensions', 'image-watermark' ),
+							'unproducible_sizes' => __( 'Image sizes that cannot be generated', 'image-watermark' ),
+							'backup_absent' => __( 'Images with no backup', 'image-watermark' ),
+							'backup_present' => __( 'Images with a backup', 'image-watermark' ),
+							'backup_validated' => __( 'Images with a verified backup', 'image-watermark' ),
+						],
+						/* translators: List of outcome counts. */
+						'counts' => __( 'Counts: %1$s', 'image-watermark' ),
+						'counterLabels' => [
+							'complete' => __( 'complete', 'image-watermark' ),
+							'partial' => __( 'partial', 'image-watermark' ),
+							'skipped' => __( 'skipped', 'image-watermark' ),
+							'failed' => __( 'failed', 'image-watermark' ),
+							'interrupted' => __( 'interrupted', 'image-watermark' ),
+							'unknown' => __( 'unknown', 'image-watermark' ),
+						],
+						/* translators: Outcome name and count. */
+						'countEntry' => __( '%1$s: %2$s', 'image-watermark' ),
+						/* translators: Counts grouped by reason. */
+						'reasons' => __( '; reasons: %1$s', 'image-watermark' ),
+						/* translators: 1: Scan data. 2: Depth. 3: Bound. 4: Scope. 5: Status. */
+						'scan' => __( '; scan: %1$s; depth: %2$s; bound: %3$s; scope: %4$s; status: %5$s', 'image-watermark' ),
+						/* translators: 1: Attachment ID. 2: Outcome. 3: Reason code. 4: Retryability. */
+						'problem' => __( 'Attachment %1$s: %2$s - %3$s (%4$s)', 'image-watermark' ),
+						'retryable' => __( 'retryable', 'image-watermark' ),
+						'notRetryable' => __( 'not retryable', 'image-watermark' ),
+						/* translators: Number of retained problems. */
+						'cap' => __( 'Problem list is limited: %1$s retained; additional problems may not be retained. See counts by reason.', 'image-watermark' ),
+						/* translators: Error message and guidance. */
+						'error' => __( 'Error: %1$s', 'image-watermark' ),
+					],
+					'operations' => [
+						'apply' => __( 'Apply watermark', 'image-watermark' ),
+						'remove' => __( 'Remove watermark', 'image-watermark' ),
+						'regenerate' => __( 'Regenerate sizes', 'image-watermark' ),
+						'scan' => __( 'Scan', 'image-watermark' ),
+					],
+				] );
+			}
 			wp_enqueue_media();
 
 			wp_enqueue_script( 'image-watermark-upload-manager', IMAGE_WATERMARK_URL . '/js/admin-upload.js', [], $this->defaults['version'], true );
@@ -466,6 +897,7 @@ final class Image_Watermark {
 
 		// image modal could be loaded in various places
 		if ( $this->options['watermark_image']['manual_watermarking'] == 1 ) {
+			wp_enqueue_style( 'watermark-admin' );
 			wp_enqueue_script( 'image-watermark-admin-image-actions', IMAGE_WATERMARK_URL . '/js/admin-image-actions.js', [], $this->defaults['version'], true );
 
 			if ( $media_script_data ) {
@@ -494,8 +926,8 @@ final class Image_Watermark {
 				'__removed_multi'	=> __( 'Watermark was successfully removed from %s images.', 'image-watermark' ),
 				'__skipped'			=> __( 'Skipped images', 'image-watermark' ),
 				'__running'			=> __( 'A bulk action is currently running. Please wait…', 'image-watermark' ),
-				'bulk_unknown'		=> __( 'Unknown - possibly completed; verify whether the image is watermarked before retrying. The request was not resent.', 'image-watermark' ),
-				'bulk_not_submitted'	=> __( 'Unknown - not submitted after a request error; verify whether the image is watermarked before retrying.', 'image-watermark' ),
+				'bulk_unknown'		=> __( 'Unknown - possibly completed; reload the page and check the image before retrying. The request was not resent.', 'image-watermark' ),
+				'bulk_not_submitted'	=> __( 'Not submitted after a request error. Reload the page and check the image before retrying.', 'image-watermark' ),
 				'__dismiss'			=> __( 'Dismiss this notice.', 'image-watermark' ),
 			];
 
@@ -523,6 +955,7 @@ final class Image_Watermark {
 							'applied'      => __( 'Watermark applied.', 'image-watermark' ),
 							'removed'      => __( 'Watermark removed.', 'image-watermark' ),
 							'error'        => __( 'Action failed.', 'image-watermark' ),
+							'unknown'      => __( 'The result is unknown and the request was not resent. Reload the page and check the image before retrying.', 'image-watermark' ),
 							'running'      => __( 'Working...', 'image-watermark' ),
 						],
 					];
@@ -753,9 +1186,13 @@ final class Image_Watermark {
 	public function redirect_old_slug() {
 		if ( isset( $_GET['page'] ) && is_string( $_GET['page'] ) && wp_unslash( $_GET['page'] ) === 'watermark-options' ) {
 			$url = admin_url( 'options-general.php?page=image-watermark' );
-			if ( isset( $_GET['tab'] ) ) {
-				$url = add_query_arg( 'tab', sanitize_key( wp_unslash( $_GET['tab'] ) ), $url );
-			}
+			$tab = isset( $_GET['tab'] ) && is_string( $_GET['tab'] ) ? sanitize_key( wp_unslash( $_GET['tab'] ) ) : 'watermark';
+			if ( ! in_array( $tab, [ 'watermark', 'protection', 'bulk', 'status' ], true ) )
+				$tab = 'watermark';
+			$url = add_query_arg( 'tab', $tab, $url );
+			// A form opened before the move can return here from options.php.
+			if ( isset( $_GET['settings-updated'] ) && $_GET['settings-updated'] === 'true' )
+				$url = add_query_arg( 'settings-updated', 'true', $url );
 			wp_safe_redirect( $url );
 			exit;
 		}
@@ -765,10 +1202,11 @@ final class Image_Watermark {
 	 * Apply watermark everywhere or for specific post types.
 	 *
 	 * @param resource $file
+	 * @param string   $context Upload context passed by wp_handle_upload.
 	 * @return resource
 	 */
-	public function handle_upload_files( $file ) {
-		return $this->get_upload_handler()->handle_upload_files( $file );
+	public function handle_upload_files( $file, $context = 'upload' ) {
+		return $this->get_upload_handler()->handle_upload_files( $file, $context );
 	}
 
 	/**
@@ -968,6 +1406,15 @@ final class Image_Watermark {
 		$this->get_watermark_controller()->watermark_bulk_action();
 	}
 
+	/** Add the authorized saved-result hint to attachment data. */
+	public function prepare_attachment_last_result( $response, $attachment ) {
+		$hint = $this->get_upload_handler()->get_saved_result_hint( $attachment->ID );
+		if ( $hint !== null ) {
+			$response['iwLastResult'] = $hint;
+		}
+		return $response;
+	}
+
 	/**
 	 * Add watermark buttons on attachment image locations.
 	 *
@@ -986,10 +1433,12 @@ final class Image_Watermark {
 				$remove_action = $this->get_upload_handler()->is_backup_available_for_display( $backup_path )
 					? ' | <a href="#" class="iw-watermark-action delete-watermark" data-action="removewatermark" data-id="' . $post->ID . '">' . __( 'Remove watermark', 'image-watermark' ) . '</a>'
 					: '';
+				$hint = $this->get_upload_handler()->get_saved_result_hint( $post->ID );
+				$hint_attribute = $hint ? ' data-iw-last-result="' . esc_attr( wp_json_encode( $hint ) ) . '"' : '';
 				$form_fields['image_watermark'] = [
 					'show_in_edit'	=> false,
 					'tr'			=> '
-					<div id="image_watermark_buttons"' . ( get_post_meta( $post->ID, $this->is_watermarked_metakey, true ) ? ' class="watermarked"' : '' ) . ' data-id="' . $post->ID . '" style="display: none;">
+					<div id="image_watermark_buttons"' . ( get_post_meta( $post->ID, $this->is_watermarked_metakey, true ) ? ' class="watermarked"' : '' ) . ' data-id="' . $post->ID . '"' . $hint_attribute . ' style="display: none;">
 						<label class="setting">
 							<span class="name">' . __( 'Image Watermark', 'image-watermark' ) . '</span>
 							<span class="value" style="width: 63%"><a href="#" class="iw-watermark-action" data-action="applywatermark" data-id="' . $post->ID . '">' . __( 'Apply watermark', 'image-watermark' ) . '</a>' . $remove_action . '</span>
@@ -1035,7 +1484,9 @@ final class Image_Watermark {
 	 * @return string
 	 */
 	private function format_bulk_outcome( $attachment_id, $outcome ) {
-		$operation = isset( $outcome['operation'] ) && $outcome['operation'] === 'remove' ? __( 'remove', 'image-watermark' ) : __( 'apply', 'image-watermark' );
+		$operation = isset( $outcome['operation'] ) && $outcome['operation'] === 'regenerate'
+			? __( 'regenerate', 'image-watermark' )
+			: ( isset( $outcome['operation'] ) && $outcome['operation'] === 'remove' ? __( 'remove', 'image-watermark' ) : __( 'apply', 'image-watermark' ) );
 		$state     = isset( $outcome['outcome'] ) ? sanitize_key( $outcome['outcome'] ) : 'failed';
 		$sizes     = isset( $outcome['sizes'] ) && is_array( $outcome['sizes'] ) ? $outcome['sizes'] : [];
 		$processed = isset( $sizes['processed'] ) && is_array( $sizes['processed'] ) ? $sizes['processed'] : [];
@@ -1151,7 +1602,7 @@ final class Image_Watermark {
 					echo '<div class="error"><p>' . implode( '<br />', array_map( 'esc_html', $messages ) ) . '</p></div>';
 				}
 
-					$_SERVER['REQUEST_URI'] = esc_url( remove_query_arg( [ 'watermarked', 'watermarkremoved', 'skipped', 'iw_partial_apply', 'iw_partial_remove', 'messages', 'iw_outcomes', 'iw_bulk_result', 'iw_bulk_remaining' ], $_SERVER['REQUEST_URI'] ) );
+					$_SERVER['REQUEST_URI'] = esc_url( remove_query_arg( [ 'watermarked', 'watermarkremoved', 'regenerated', 'skipped', 'iw_partial_apply', 'iw_partial_remove', 'messages', 'iw_outcomes', 'iw_bulk_result', 'iw_bulk_remaining' ], $_SERVER['REQUEST_URI'] ) );
 			}
 		}
 	}
@@ -1360,7 +1811,7 @@ final class Image_Watermark {
 		if ( ! is_admin() || ! current_user_can( 'manage_options' ) )
 			return $links;
 
-		array_unshift( $links, sprintf( '<a href="%s">%s</a>', admin_url( 'options-general.php' ) . '?page=image-watermark', __( 'Settings', 'image-watermark' ) ) );
+		array_unshift( $links, sprintf( '<a href="%s">%s</a>', admin_url( 'options-general.php?page=image-watermark&tab=watermark' ), __( 'Settings', 'image-watermark' ) ) );
 
 		return $links;
 	}
@@ -1429,13 +1880,14 @@ final class Image_Watermark {
 		$backup_path = $this->get_upload_handler()->get_image_backup_filepath( get_post_meta( $post->ID, '_wp_attached_file', true ) );
 		// Display check only; the operation validates the backup before restoring it.
 		$remove_allowed = $this->get_upload_handler()->is_backup_available_for_display( $backup_path );
+		$hint = $this->get_upload_handler()->get_saved_result_hint( $post->ID );
 		?>
-		<div class="misc-pub-section iw-classic-actions">
+		<div class="misc-pub-section iw-classic-actions" data-attachment-id="<?php echo esc_attr( $post->ID ); ?>">
 			<button type="button" class="button-link iw-classic-apply"><?php esc_html_e( 'Apply watermark', 'image-watermark' ); ?></button>
 			<?php if ( $remove_allowed ) : ?>
 				| <button type="button" class="button-link iw-classic-remove"><?php esc_html_e( 'Remove watermark', 'image-watermark' ); ?></button>
 			<?php endif; ?>
-			<div class="iw-classic-status" aria-live="polite"></div>
+			<div class="iw-classic-status<?php echo $hint ? ' iw-outcome-' . esc_attr( $hint['outcome'] ) : ''; ?>" aria-live="polite"><?php echo $hint ? esc_html( $hint['message'] ) : ''; ?></div>
 		</div>
 		<?php
 	}
